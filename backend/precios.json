@@ -1,0 +1,32 @@
+{
+    "muros": {
+        "ladrillo_comun": {
+            "nombre": "Ladrillo Común",
+            "precio_materiales_m2": 4500.0,
+            "mano_obra_m2": 13000.0
+        },
+        "ladrillo_hueco_12": {
+            "nombre": "Ladrillo Hueco 12cm",
+            "precio_materiales_m2": 3800.0,
+            "mano_obra_m2": 12000.0
+        }
+    },
+    "terminaciones": {
+        "combo_grueso_fino": {
+            "nombre": "Revoque Grueso + Fino",
+            "mano_obra_m2": 20000.0,
+            "precio_materiales_m2": 3500.0
+        }
+    },
+    "pisos": {
+        "secos_gris": {
+            "nombre": "Contrapiso + Carpeta + Cerámico",
+            "mano_obra_m2": 40000.0, 
+            "precio_materiales_m2": 18000.0
+        }
+    },
+    "aberturas": {
+        "precio_promedio_unidad_material": 180000.0,
+        "mano_obra_colocacion": 70000.0
+    }
+}
