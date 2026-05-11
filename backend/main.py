@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 import time
-from io import StringIO
+from io import BytesIO, StringIO
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
 from motor_ia import procesar_plano_ia
+from fpdf import FPDF
 
 
 def normalize_database_url(url: str) -> str:
