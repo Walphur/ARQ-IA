@@ -21,6 +21,18 @@ const formatoMoneda = (valor) =>
   }).format(Number(valor || 0));
 
 
+const postAuthWithFallback = async (path, payload) => {
+  try {
+    return await axios.post(`${API_URL}${path}`, payload);
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      return axios.post(`${API_URL}/api${path}`, payload);
+    }
+    throw err;
+  }
+};
+
+
 const getErrorMessage = (err, fallback, authMode = null) => {
   const detail = String(err?.response?.data?.detail || '').toLowerCase();
   if (authMode === 'login' && (detail.includes('email o clave incorrectos') || err?.response?.status === 401)) {
@@ -121,7 +133,7 @@ function App() {
         authMode === 'login'
           ? { email: authForm.email, password: authForm.password }
           : authForm;
-      const res = await axios.post(`${API_URL}${path}`, payload);
+      const res = await postAuthWithFallback(path, payload);
       localStorage.setItem('arqia_token', res.data.token);
       setToken(res.data.token);
     } catch (err) {
