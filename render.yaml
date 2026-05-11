@@ -38,7 +38,7 @@ services:
     staticPublishPath: build
     envVars:
       - key: REACT_APP_API_URL
-        value: https://api.arq-ia.pro
+        value: https://arq-ia-api.onrender.com
     routes:
       - type: rewrite
         source: /*
