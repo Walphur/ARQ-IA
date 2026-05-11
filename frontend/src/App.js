@@ -20,6 +20,31 @@ const formatoMoneda = (valor) =>
     maximumFractionDigits: 0,
   }).format(Number(valor || 0));
 
+
+const postAuthWithFallback = async (path, payload) => {
+  try {
+    return await axios.post(`${API_URL}${path}`, payload);
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      return axios.post(`${API_URL}/api${path}`, payload);
+    }
+    throw err;
+  }
+};
+
+
+const getErrorMessage = (err, fallback, authMode = null) => {
+  const detail = String(err?.response?.data?.detail || '').toLowerCase();
+  if (authMode === 'login' && (detail.includes('email o clave incorrectos') || err?.response?.status === 401)) {
+    return 'No existe una cuenta con esos datos o la clave es incorrecta. Primero crea tu usuario en "Crear estudio".';
+  }
+  if (err?.response?.data?.detail) return err.response.data.detail;
+  if (err?.message === 'Network Error') {
+    return 'No se pudo conectar con el servidor. Verifica REACT_APP_API_URL, CORS y que la API este online.';
+  }
+  return fallback;
+};
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('arqia_token') || '');
   const [authMode, setAuthMode] = useState('login');
@@ -93,6 +118,14 @@ function App() {
   const submitAuth = async (event) => {
     event.preventDefault();
     setError('');
+
+    if (authMode === 'register') {
+      if (!authForm.studio_name.trim() || !authForm.name.trim()) {
+        setError('Completa nombre del estudio y tu nombre para crear la cuenta.');
+        return;
+      }
+    }
+
     setLoading('auth');
     try {
       const path = authMode === 'login' ? '/auth/login' : '/auth/register';
@@ -100,11 +133,11 @@ function App() {
         authMode === 'login'
           ? { email: authForm.email, password: authForm.password }
           : authForm;
-      const res = await axios.post(`${API_URL}${path}`, payload);
+      const res = await postAuthWithFallback(path, payload);
       localStorage.setItem('arqia_token', res.data.token);
       setToken(res.data.token);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo iniciar sesion.');
+      setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
     } finally {
       setLoading('');
     }
@@ -129,7 +162,7 @@ function App() {
       await refreshProjects();
       setActiveProjectId(String(res.data.id));
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo crear la obra.');
+      setError(getErrorMessage(err, 'No se pudo crear la obra.'));
     } finally {
       setLoading('');
     }
@@ -148,7 +181,7 @@ function App() {
       await api.post(`/projects/${activeProjectId}/calcular`, formData);
       await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo procesar el plano.');
+      setError(getErrorMessage(err, 'No se pudo procesar el plano.'));
     } finally {
       setLoading('');
     }
@@ -161,7 +194,7 @@ function App() {
       const res = await api.post('/billing/create-checkout-session');
       window.location.href = res.data.url;
     } catch (err) {
-      setError(err.response?.data?.detail || 'Stripe todavia no esta configurado.');
+      setError(getErrorMessage(err, 'Stripe todavia no esta configurado.'));
     } finally {
       setLoading('');
     }
@@ -179,7 +212,7 @@ function App() {
       link.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo exportar la obra.');
+      setError(getErrorMessage(err, 'No se pudo exportar la obra.'));
     }
   };
 
@@ -206,13 +239,15 @@ function App() {
             <h2>{authMode === 'login' ? 'Ingresar al estudio' : 'Crear un estudio'}</h2>
           </div>
           <div className="segmented">
-            <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
+            <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => { setAuthMode('login'); setError(''); }}>
               Ingresar
             </button>
-            <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
+            <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => { setAuthMode('register'); setError(''); }}>
               Crear estudio
             </button>
           </div>
+
+          {authMode === 'login' && <small className="auth-help">Si no tenes cuenta todavia, primero crea tu usuario en "Crear estudio".</small>}
 
           {authMode === 'register' && (
             <>

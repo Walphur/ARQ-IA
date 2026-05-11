@@ -51,10 +51,12 @@ allowed_origins = [
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://.*\.onrender\.com$")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -259,12 +261,22 @@ def ensure_usage_available(db: Session, studio: Studio):
         )
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "arq-ia-backend", "health": "/health", "register": "/auth/register", "login": "/auth/login"}
+
+
+@app.get("/api/health")
+async def health_api():
+    return {"status": "ok"}
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
 @app.post("/auth/register")
+@app.post("/api/auth/register")
 def register(data: RegisterIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     if len(data.password) < 8:
@@ -290,6 +302,7 @@ def register(data: RegisterIn, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
+@app.post("/api/auth/login")
 def login(data: LoginIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     user = db.query(User).filter(User.email == email).first()
