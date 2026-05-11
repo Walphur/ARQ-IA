@@ -391,24 +391,43 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     output = StringIO()
-    output.write("obra,cliente,tipo_plano,archivo,item,valor,total,fecha\n")
+    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_numerico,valor_formateado,total_numerico,escala_detectada_ia,fecha,imagen_base64\n")
     processes = (
         db.query(Process)
         .filter(Process.project_id == project.id)
         .order_by(Process.created_at.asc())
         .all()
     )
+
+    def to_number(value):
+        if isinstance(value, (int, float)):
+            return float(value)
+        raw = str(value or "").strip().replace(" ", "")
+        raw = raw.replace(".", "").replace(",", ".")
+        try:
+            return float(raw)
+        except Exception:
+            return 0.0
+
     for process in processes:
         for item in process.items:
+            nombre = str(item.get("nom", ""))
+            categoria, detalle = (nombre.split(":", 1) + [""])[:2] if ":" in nombre else ("General", nombre)
+            valor_txt = str(item.get("val", ""))
+            valor_num = to_number(item.get("val", 0))
             row = [
                 project.name,
                 project.client or "",
                 process.tipo_plano,
                 process.filename,
-                str(item.get("nom", "")),
-                str(item.get("val", "")),
-                str(process.total),
+                categoria.strip(),
+                detalle.strip(),
+                f"{valor_num:.2f}",
+                valor_txt,
+                f"{float(process.total or 0):.2f}",
+                str(process.escala_detectada or ""),
                 process.created_at.isoformat(),
+                process.audit_image_base64,
             ]
             escaped = ['"' + value.replace('"', '""') + '"' for value in row]
             output.write(",".join(escaped) + "\n")
@@ -420,8 +439,6 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
 
 
 @app.delete("/projects/{project_id}")
@@ -448,43 +465,6 @@ def delete_process(process_id: int, user: User = Depends(current_user), db: Sess
     db.delete(process)
     db.commit()
     return {"ok": True}
-
-
-@app.get("/projects/{project_id}/export.pdf")
-def export_project_pdf(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = db.get(Project, project_id)
-    if not project or project.studio_id != user.studio_id:
-        raise HTTPException(status_code=404, detail="Obra no encontrada.")
-
-    processes = (
-        db.query(Process)
-        .filter(Process.project_id == project.id)
-        .order_by(Process.created_at.asc())
-        .all()
-    )
-
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=12)
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, f"ARQ-IA | Obra: {project.name}", ln=1)
-    pdf.set_font("Helvetica", size=11)
-    pdf.cell(0, 7, f"Cliente: {project.client or '-'}", ln=1)
-    pdf.cell(0, 7, f"Direccion: {project.address or '-'}", ln=1)
-    pdf.cell(0, 7, f"Analisis: {len(processes)}", ln=1)
-
-    for idx, process in enumerate(processes, start=1):
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.multi_cell(0, 7, f"{idx}. {process.tipo_plano} | {process.filename}")
-        pdf.set_font("Helvetica", size=10)
-        pdf.multi_cell(0, 6, f"Fecha: {process.created_at.isoformat()} | Total: {process.total}")
-        for item in process.items:
-            pdf.multi_cell(0, 5, f"- {item.get('nom','')}: {item.get('val','')}")
-
-    buffer = BytesIO(pdf.output(dest='S'))
-    filename = f"arq-ia-obra-{project.id}.pdf"
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.post("/projects/{project_id}/calcular")

@@ -247,22 +247,6 @@ function App() {
     }
   };
 
-  const exportarPdf = async () => {
-    if (!activeProjectId) return;
-    setError('');
-    try {
-      const res = await api.get(`/projects/${activeProjectId}/export.pdf`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `arq-ia-obra-${activeProjectId}.pdf`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(getErrorMessage(err, 'No se pudo exportar el PDF.'));
-    }
-  };
-
   if (!token) {
     return (
       <div className="auth-page" style={{ backgroundImage: `linear-gradient(rgba(8,8,8,.78), rgba(8,8,8,.95)), url(${bannerFondo})` }}>
@@ -338,7 +322,7 @@ function App() {
 
       {mostrarGuia && (
         <section className="guide-band">
-          <strong>Guia de colores:</strong> escala verde fluor con medida cerca; muros rojo; pisos gris/naranja; agua fria azul; agua caliente magenta; cloacas naranja/sepia; electricidad amarillo; techo violeta; terrenos gris oscuro.
+          <strong>Guia de Calibracion Rapida:</strong> Terrenos/Lotes gris oscuro; Escala automatica: linea verde fluor + medida en negro; Muros: paredes rojo y pisos gris o naranja; Sanitario: azul (agua fria), magenta/fucsia (agua caliente), naranja/sepia (cloacas); Electrico: amarillo.
         </section>
       )}
 
@@ -383,13 +367,13 @@ function App() {
             </div>
             <div className="panel-actions">
               <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>Exportar CSV</button>
-              <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>Exportar PDF</button>
-              <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>Eliminar obra</button>
+                            <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>Eliminar obra</button>
               <label className="scale-control">
                 Escala manual
                 <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
                 m
               </label>
+              <div className="usage-pill">Escala detectada IA: {lastProcess?.escala_detectada ? `${Number(lastProcess.escala_detectada).toFixed(2)} m` : "-"}</div>
             </div>
           </div>
 
