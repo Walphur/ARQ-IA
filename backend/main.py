@@ -267,6 +267,7 @@ async def health():
 
 
 @app.post("/auth/register")
+@app.post("/api/auth/register")
 def register(data: RegisterIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     if len(data.password) < 8:
@@ -292,6 +293,7 @@ def register(data: RegisterIn, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
+@app.post("/api/auth/login")
 def login(data: LoginIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     user = db.query(User).filter(User.email == email).first()
