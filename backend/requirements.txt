@@ -8,3 +8,4 @@ SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 pydantic[email]==2.10.4
 stripe==11.4.1
+
