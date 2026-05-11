@@ -3,7 +3,7 @@ import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.png';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_URL = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 const modulos = [
   { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M' },
@@ -20,6 +20,31 @@ const formatoMoneda = (valor) =>
     maximumFractionDigits: 0,
   }).format(Number(valor || 0));
 
+
+const postAuthWithFallback = async (path, payload) => {
+  try {
+    return await axios.post(`${API_URL}${path}`, payload);
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      return axios.post(`${API_URL}/api${path}`, payload);
+    }
+    throw err;
+  }
+};
+
+
+const getErrorMessage = (err, fallback, authMode = null) => {
+  const detail = String(err?.response?.data?.detail || '').toLowerCase();
+  if (authMode === 'login' && (detail.includes('email o clave incorrectos') || err?.response?.status === 401)) {
+    return 'No existe una cuenta con esos datos o la clave es incorrecta. Primero crea tu usuario en "Crear estudio".';
+  }
+  if (err?.response?.data?.detail) return err.response.data.detail;
+  if (err?.message === 'Network Error') {
+    return 'No se pudo conectar con el servidor. Verifica REACT_APP_API_URL, CORS y que la API este online.';
+  }
+  return fallback;
+};
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('arqia_token') || '');
   const [authMode, setAuthMode] = useState('login');
@@ -31,7 +56,7 @@ function App() {
   });
   const [me, setMe] = useState(null);
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState('');
+  const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('arqia_project_id') || '');
   const [processes, setProcesses] = useState([]);
   const [projectForm, setProjectForm] = useState({ name: '', client: '', address: '' });
   const [referencia, setReferencia] = useState(1);
@@ -63,7 +88,10 @@ function App() {
   const refreshProjects = async () => {
     const res = await api.get('/projects');
     setProjects(res.data);
-    if (!activeProjectId && res.data[0]) setActiveProjectId(String(res.data[0].id));
+    const savedId = localStorage.getItem('arqia_project_id');
+    const exists = res.data.some((p) => String(p.id) === String(savedId));
+    if (exists) setActiveProjectId(String(savedId));
+    else if (res.data[0]) setActiveProjectId(String(res.data[0].id));
   };
 
   const refreshProcesses = async (projectId = activeProjectId) => {
@@ -86,13 +114,24 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (activeProjectId) refreshProcesses(activeProjectId);
+    if (activeProjectId) {
+      localStorage.setItem('arqia_project_id', String(activeProjectId));
+      refreshProcesses(activeProjectId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId]);
 
   const submitAuth = async (event) => {
     event.preventDefault();
     setError('');
+
+    if (authMode === 'register') {
+      if (!authForm.studio_name.trim() || !authForm.name.trim()) {
+        setError('Completa nombre del estudio y tu nombre para crear la cuenta.');
+        return;
+      }
+    }
+
     setLoading('auth');
     try {
       const path = authMode === 'login' ? '/auth/login' : '/auth/register';
@@ -100,11 +139,11 @@ function App() {
         authMode === 'login'
           ? { email: authForm.email, password: authForm.password }
           : authForm;
-      const res = await axios.post(`${API_URL}${path}`, payload);
+      const res = await postAuthWithFallback(path, payload);
       localStorage.setItem('arqia_token', res.data.token);
       setToken(res.data.token);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo iniciar sesion.');
+      setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
     } finally {
       setLoading('');
     }
@@ -129,7 +168,7 @@ function App() {
       await refreshProjects();
       setActiveProjectId(String(res.data.id));
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo crear la obra.');
+      setError(getErrorMessage(err, 'No se pudo crear la obra.'));
     } finally {
       setLoading('');
     }
@@ -148,7 +187,7 @@ function App() {
       await api.post(`/projects/${activeProjectId}/calcular`, formData);
       await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo procesar el plano.');
+      setError(getErrorMessage(err, 'No se pudo procesar el plano.'));
     } finally {
       setLoading('');
     }
@@ -161,7 +200,7 @@ function App() {
       const res = await api.post('/billing/create-checkout-session');
       window.location.href = res.data.url;
     } catch (err) {
-      setError(err.response?.data?.detail || 'Stripe todavia no esta configurado.');
+      setError(getErrorMessage(err, 'Stripe todavia no esta configurado.'));
     } finally {
       setLoading('');
     }
@@ -179,7 +218,48 @@ function App() {
       link.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err.response?.data?.detail || 'No se pudo exportar la obra.');
+      setError(getErrorMessage(err, 'No se pudo exportar la obra.'));
+    }
+  };
+
+
+  const eliminarAnalisis = async (processId) => {
+    if (!window.confirm('Eliminar este analisis?')) return;
+    setError('');
+    try {
+      await api.delete(`/processes/${processId}`);
+      await Promise.all([refreshProcesses(activeProjectId), refreshProjects(), refreshMe()]);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo eliminar el analisis.'));
+    }
+  };
+
+  const eliminarObra = async () => {
+    if (!activeProjectId || !window.confirm('Eliminar esta obra y todo su historial?')) return;
+    setError('');
+    try {
+      await api.delete(`/projects/${activeProjectId}`);
+      setActiveProjectId('');
+      await Promise.all([refreshProjects(), refreshMe()]);
+      setProcesses([]);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo eliminar la obra.'));
+    }
+  };
+
+  const exportarPdf = async () => {
+    if (!activeProjectId) return;
+    setError('');
+    try {
+      const res = await api.get(`/projects/${activeProjectId}/export.pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `arq-ia-obra-${activeProjectId}.pdf`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo exportar el PDF.'));
     }
   };
 
@@ -206,13 +286,15 @@ function App() {
             <h2>{authMode === 'login' ? 'Ingresar al estudio' : 'Crear un estudio'}</h2>
           </div>
           <div className="segmented">
-            <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
+            <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => { setAuthMode('login'); setError(''); }}>
               Ingresar
             </button>
-            <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
+            <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => { setAuthMode('register'); setError(''); }}>
               Crear estudio
             </button>
           </div>
+
+          {authMode === 'login' && <small className="auth-help">Si no tenes cuenta todavia, primero crea tu usuario en "Crear estudio".</small>}
 
           {authMode === 'register' && (
             <>
@@ -301,6 +383,8 @@ function App() {
             </div>
             <div className="panel-actions">
               <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>Exportar CSV</button>
+              <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>Exportar PDF</button>
+              <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>Eliminar obra</button>
               <label className="scale-control">
                 Escala manual
                 <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
@@ -381,6 +465,7 @@ function App() {
                         </div>
                       ))}
                     </div>
+                    <button className="nav-btn" onClick={() => eliminarAnalisis(process.id)}>Eliminar analisis</button>
                     <img className="img-audit" src={`data:image/png;base64,${process.imagen}`} alt="Auditoria visual" />
                   </article>
                 ))}
