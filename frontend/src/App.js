@@ -3,7 +3,7 @@ import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.png';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_URL = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 const modulos = [
   { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M' },
