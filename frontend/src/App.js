@@ -56,7 +56,7 @@ function App() {
   });
   const [me, setMe] = useState(null);
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState('');
+  const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('arqia_project_id') || '');
   const [processes, setProcesses] = useState([]);
   const [projectForm, setProjectForm] = useState({ name: '', client: '', address: '' });
   const [referencia, setReferencia] = useState(1);
@@ -88,7 +88,10 @@ function App() {
   const refreshProjects = async () => {
     const res = await api.get('/projects');
     setProjects(res.data);
-    if (!activeProjectId && res.data[0]) setActiveProjectId(String(res.data[0].id));
+    const savedId = localStorage.getItem('arqia_project_id');
+    const exists = res.data.some((p) => String(p.id) === String(savedId));
+    if (exists) setActiveProjectId(String(savedId));
+    else if (res.data[0]) setActiveProjectId(String(res.data[0].id));
   };
 
   const refreshProcesses = async (projectId = activeProjectId) => {
@@ -111,7 +114,10 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (activeProjectId) refreshProcesses(activeProjectId);
+    if (activeProjectId) {
+      localStorage.setItem('arqia_project_id', String(activeProjectId));
+      refreshProcesses(activeProjectId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId]);
 
@@ -213,6 +219,47 @@ function App() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo exportar la obra.'));
+    }
+  };
+
+
+  const eliminarAnalisis = async (processId) => {
+    if (!window.confirm('Eliminar este analisis?')) return;
+    setError('');
+    try {
+      await api.delete(`/processes/${processId}`);
+      await Promise.all([refreshProcesses(activeProjectId), refreshProjects(), refreshMe()]);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo eliminar el analisis.'));
+    }
+  };
+
+  const eliminarObra = async () => {
+    if (!activeProjectId || !window.confirm('Eliminar esta obra y todo su historial?')) return;
+    setError('');
+    try {
+      await api.delete(`/projects/${activeProjectId}`);
+      setActiveProjectId('');
+      await Promise.all([refreshProjects(), refreshMe()]);
+      setProcesses([]);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo eliminar la obra.'));
+    }
+  };
+
+  const exportarPdf = async () => {
+    if (!activeProjectId) return;
+    setError('');
+    try {
+      const res = await api.get(`/projects/${activeProjectId}/export.pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `arq-ia-obra-${activeProjectId}.pdf`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo exportar el PDF.'));
     }
   };
 
@@ -336,6 +383,8 @@ function App() {
             </div>
             <div className="panel-actions">
               <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>Exportar CSV</button>
+              <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>Exportar PDF</button>
+              <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>Eliminar obra</button>
               <label className="scale-control">
                 Escala manual
                 <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
@@ -416,6 +465,7 @@ function App() {
                         </div>
                       ))}
                     </div>
+                    <button className="nav-btn" onClick={() => eliminarAnalisis(process.id)}>Eliminar analisis</button>
                     <img className="img-audit" src={`data:image/png;base64,${process.imagen}`} alt="Auditoria visual" />
                   </article>
                 ))}

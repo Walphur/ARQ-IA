@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 import time
-from io import StringIO
+from io import BytesIO, StringIO
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
 from motor_ia import procesar_plano_ia
+from fpdf import FPDF
 
 
 def normalize_database_url(url: str) -> str:
@@ -419,6 +420,71 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+
+
+@app.delete("/projects/{project_id}")
+def delete_project(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+
+    db.query(Process).filter(Process.project_id == project.id).delete()
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/processes/{process_id}")
+def delete_process(process_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    process = db.get(Process, process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+    project = db.get(Project, process.project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+
+    db.delete(process)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/projects/{project_id}/export.pdf")
+def export_project_pdf(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+
+    processes = (
+        db.query(Process)
+        .filter(Process.project_id == project.id)
+        .order_by(Process.created_at.asc())
+        .all()
+    )
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, f"ARQ-IA | Obra: {project.name}", ln=1)
+    pdf.set_font("Helvetica", size=11)
+    pdf.cell(0, 7, f"Cliente: {project.client or '-'}", ln=1)
+    pdf.cell(0, 7, f"Direccion: {project.address or '-'}", ln=1)
+    pdf.cell(0, 7, f"Analisis: {len(processes)}", ln=1)
+
+    for idx, process in enumerate(processes, start=1):
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(0, 7, f"{idx}. {process.tipo_plano} | {process.filename}")
+        pdf.set_font("Helvetica", size=10)
+        pdf.multi_cell(0, 6, f"Fecha: {process.created_at.isoformat()} | Total: {process.total}")
+        for item in process.items:
+            pdf.multi_cell(0, 5, f"- {item.get('nom','')}: {item.get('val','')}")
+
+    buffer = BytesIO(pdf.output(dest='S'))
+    filename = f"arq-ia-obra-{project.id}.pdf"
+    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.post("/projects/{project_id}/calcular")
