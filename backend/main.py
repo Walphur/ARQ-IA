@@ -261,6 +261,15 @@ def ensure_usage_available(db: Session, studio: Studio):
         )
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "arq-ia-backend", "health": "/health", "register": "/auth/register", "login": "/auth/login"}
+
+
+@app.get("/api/health")
+async def health_api():
+    return {"status": "ok"}
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
