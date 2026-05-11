@@ -20,14 +20,11 @@ const formatoMoneda = (valor) =>
     maximumFractionDigits: 0,
   }).format(Number(valor || 0));
 
-
-
 const getErrorMessage = (err, fallback, authMode = null) => {
   const detail = String(err?.response?.data?.detail || '').toLowerCase();
   if (authMode === 'login' && (detail.includes('email o clave incorrectos') || err?.response?.status === 401)) {
     return 'No existe una cuenta con esos datos o la clave es incorrecta. Primero crea tu usuario en "Crear estudio".';
   }
-
 const getErrorMessage = (err, fallback) => {
 
   if (err?.response?.data?.detail) return err.response.data.detail;
@@ -129,6 +126,8 @@ function App() {
       localStorage.setItem('arqia_token', res.data.token);
       setToken(res.data.token);
     } catch (err) {
+
+      setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
 
       setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
 
@@ -242,6 +241,8 @@ function App() {
               Crear estudio
             </button>
           </div>
+
+          {authMode === 'login' && <small className="auth-help">Si no tenes cuenta todavia, primero crea tu usuario en "Crear estudio".</small>}
 
           {authMode === 'register' && (
             <>
