@@ -39,6 +39,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
+APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -264,16 +265,16 @@ def ensure_usage_available(db: Session, studio: Studio):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "arq-ia-backend", "health": "/health", "register": "/auth/register", "login": "/auth/login"}
+    return {"status": "ok", "service": "arq-ia-backend", "version": APP_VERSION, "health": "/health", "register": "/auth/register", "login": "/auth/login"}
 
 
 @app.get("/api/health")
 async def health_api():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.post("/auth/register")
