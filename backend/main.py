@@ -43,7 +43,7 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 
 if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
-    raise RuntimeError("DATABASE_URL no configurada en Render. Configura PostgreSQL para no perder usuarios al reiniciar.")
+    print("[WARN] DATABASE_URL no configurada en Render: usando SQLite efimera. Configura PostgreSQL para persistencia.")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
