@@ -63,7 +63,7 @@ if APP_URL:
         allowed_origins.append(APP_URL.replace("https://", "https://www.", 1).rstrip("/"))
 allowed_origins = sorted(set(allowed_origins))
 
-allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://.*\.onrender\.com$")
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://((.*\.onrender\.com)|((.*\.)?arq-ia\.pro))$")
 
 app.add_middleware(
     CORSMiddleware,
