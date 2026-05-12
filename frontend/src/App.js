@@ -4,7 +4,9 @@ import './App.css';
 import bannerFondo from './banner-fondo.png';
 
 const DEFAULT_API_URL = window.location.hostname === 'localhost' ? 'http://localhost:8000' : `https://api.${window.location.hostname.replace(/^www\./, '')}`;
-const API_URL = (process.env.REACT_APP_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
+const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
+const useDefaultApi = window.location.hostname !== 'localhost' && ENV_API_URL.includes('.onrender.com');
+const API_URL = ((useDefaultApi ? DEFAULT_API_URL : (ENV_API_URL || DEFAULT_API_URL))).replace(/\/+$/, '');
 
 const modulos = [
   { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M' },
