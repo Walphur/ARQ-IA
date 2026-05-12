@@ -38,6 +38,11 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+
+if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
+    print("[WARN] DATABASE_URL no configurada en Render: usando SQLite efimera. Configura PostgreSQL para persistencia.")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -51,10 +56,17 @@ allowed_origins = [
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+if APP_URL:
+    allowed_origins.append(APP_URL.rstrip("/"))
+    if APP_URL.startswith("https://") and "www." not in APP_URL:
+        allowed_origins.append(APP_URL.replace("https://", "https://www.", 1).rstrip("/"))
+allowed_origins = sorted(set(allowed_origins))
+
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://((.*\.onrender\.com)|((.*\.)?arq-ia\.pro))$")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -259,12 +271,22 @@ def ensure_usage_available(db: Session, studio: Studio):
         )
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "arq-ia-backend", "version": APP_VERSION, "health": "/health", "register": "/auth/register", "login": "/auth/login"}
+
+
+@app.get("/api/health")
+async def health_api():
+    return {"status": "ok", "version": APP_VERSION}
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.post("/auth/register")
+@app.post("/api/auth/register")
 def register(data: RegisterIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     if len(data.password) < 8:
@@ -290,6 +312,7 @@ def register(data: RegisterIn, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
+@app.post("/api/auth/login")
 def login(data: LoginIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
     user = db.query(User).filter(User.email == email).first()
@@ -377,23 +400,30 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     output = StringIO()
-    output.write("obra,cliente,tipo_plano,archivo,item,valor,total,fecha\n")
+    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_numerico,escala_detectada_ia,fecha\n")
     processes = (
         db.query(Process)
         .filter(Process.project_id == project.id)
         .order_by(Process.created_at.asc())
         .all()
     )
+
+
     for process in processes:
         for item in process.items:
+            nombre = str(item.get("nom", ""))
+            categoria, detalle = (nombre.split(":", 1) + [""])[:2] if ":" in nombre else ("General", nombre)
+            valor_txt = str(item.get("val", ""))
             row = [
                 project.name,
                 project.client or "",
                 process.tipo_plano,
                 process.filename,
-                str(item.get("nom", "")),
-                str(item.get("val", "")),
-                str(process.total),
+                categoria.strip(),
+                detalle.strip(),
+                valor_txt,
+                f"{float(process.total or 0):.2f}",
+                str(process.escala_detectada or ""),
                 process.created_at.isoformat(),
             ]
             escaped = ['"' + value.replace('"', '""') + '"' for value in row]
@@ -406,6 +436,32 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.delete("/projects/{project_id}")
+def delete_project(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+
+    db.query(Process).filter(Process.project_id == project.id).delete()
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/processes/{process_id}")
+def delete_process(process_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    process = db.get(Process, process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+    project = db.get(Project, process.project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+
+    db.delete(process)
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/projects/{project_id}/calcular")

@@ -16,6 +16,8 @@ services:
         value: https://arq-ia.pro
       - key: ALLOWED_ORIGINS
         value: https://arq-ia.pro,https://www.arq-ia.pro
+      - key: ALLOWED_ORIGIN_REGEX
+        value: https://.*\\.onrender\\.com$
       - key: MAX_UPLOAD_MB
         value: 15
       - key: TESSERACT_CMD
@@ -34,11 +36,11 @@ services:
   - type: static
     name: arq-ia-web
     rootDir: frontend
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci && rm -rf node_modules/.cache build && npm run build
     staticPublishPath: build
     envVars:
       - key: REACT_APP_API_URL
-        value: https://api.arq-ia.pro
+        value: https://arq-ia-backend.onrender.com
     routes:
       - type: rewrite
         source: /*
