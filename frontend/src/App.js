@@ -323,6 +323,7 @@ function App() {
           <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
             Suscripcion
           </button>
+          <a className="nav-btn" href="https://wa.me/5490000000000" target="_blank" rel="noreferrer">Soporte</a>
           <button className="nav-btn" onClick={logout}>Salir</button>
         </div>
       </header>
@@ -404,6 +405,19 @@ function App() {
               <strong>{me?.studio?.used_this_month || 0}/{me?.studio?.monthly_limit || 0}</strong>
             </div>
           </div>
+
+
+          {activeProjectId && processes.length === 0 && (
+            <div className="guide-band">
+              <strong>Onboarding rapido:</strong> 1) Crea/selecciona obra 2) Carga tu primer plano 3) Exporta CSV para compartir con tu cliente.
+            </div>
+          )}
+
+          {(me?.studio?.used_this_month || 0) >= Math.floor((me?.studio?.monthly_limit || 1) * 0.8) && (
+            <div className="error-box">
+              Estas usando mas del 80% del plan mensual. Considera actualizar tu suscripcion para no frenar el flujo.
+            </div>
+          )}
 
           <div className="module-grid">
             {modulos.map((modulo) => (

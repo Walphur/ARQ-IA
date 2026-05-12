@@ -401,7 +401,7 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     output = StringIO()
-    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_numerico,valor_formateado,total_numerico,escala_detectada_ia,fecha,imagen_base64\n")
+    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_numerico,escala_detectada_ia,fecha\n")
     processes = (
         db.query(Process)
         .filter(Process.project_id == project.id)
@@ -409,22 +409,12 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         .all()
     )
 
-    def to_number(value):
-        if isinstance(value, (int, float)):
-            return float(value)
-        raw = str(value or "").strip().replace(" ", "")
-        raw = raw.replace(".", "").replace(",", ".")
-        try:
-            return float(raw)
-        except Exception:
-            return 0.0
 
     for process in processes:
         for item in process.items:
             nombre = str(item.get("nom", ""))
             categoria, detalle = (nombre.split(":", 1) + [""])[:2] if ":" in nombre else ("General", nombre)
             valor_txt = str(item.get("val", ""))
-            valor_num = to_number(item.get("val", 0))
             row = [
                 project.name,
                 project.client or "",
@@ -432,7 +422,6 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
                 process.filename,
                 categoria.strip(),
                 detalle.strip(),
-                f"{valor_num:.2f}",
                 valor_txt,
                 f"{float(process.total or 0):.2f}",
                 str(process.escala_detectada or ""),
