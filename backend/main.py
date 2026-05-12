@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 import time
-from io import StringIO
+from io import BytesIO, StringIO
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
 from motor_ia import procesar_plano_ia
+from fpdf import FPDF
 
 
 def normalize_database_url(url: str) -> str:
@@ -425,6 +426,7 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
                 f"{float(process.total or 0):.2f}",
                 str(process.escala_detectada or ""),
                 process.created_at.isoformat(),
+                process.audit_image_base64,
             ]
             escaped = ['"' + value.replace('"', '""') + '"' for value in row]
             output.write(",".join(escaped) + "\n")
