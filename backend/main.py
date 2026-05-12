@@ -41,6 +41,10 @@ FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
 APP_VERSION = os.getenv("APP_VERSION", "dev")
 
+
+if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
+    raise RuntimeError("DATABASE_URL no configurada en Render. Configura PostgreSQL para no perder usuarios al reiniciar.")
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
@@ -53,6 +57,12 @@ allowed_origins = [
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+if APP_URL:
+    allowed_origins.append(APP_URL.rstrip("/"))
+    if APP_URL.startswith("https://") and "www." not in APP_URL:
+        allowed_origins.append(APP_URL.replace("https://", "https://www.", 1).rstrip("/"))
+allowed_origins = sorted(set(allowed_origins))
+
 allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://.*\.onrender\.com$")
 
 app.add_middleware(

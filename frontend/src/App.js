@@ -116,7 +116,11 @@ function App() {
   useEffect(() => {
     if (activeProjectId) {
       localStorage.setItem('arqia_project_id', String(activeProjectId));
-      refreshProcesses(activeProjectId);
+      refreshProcesses(activeProjectId).catch(() => {
+        localStorage.removeItem('arqia_token');
+        setToken('');
+        setMe(null);
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId]);
