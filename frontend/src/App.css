@@ -110,6 +110,107 @@ button {
   color: #fff;
 }
 
+.ghost-btn {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid #3d424a;
+  background: transparent;
+  color: #e8e4da;
+  font-weight: 600;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: #d4af37;
+  color: #d4af37;
+}
+
+.ghost-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.onboarding-card {
+  padding: 18px;
+  border: 1px solid #2b3037;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #17191d 0%, #111317 100%);
+  margin-bottom: 18px;
+}
+
+.onboarding-card h2 {
+  margin: 4px 0 8px;
+  color: #fff;
+  font-size: 1.1rem;
+}
+
+.onboarding-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.onboarding-lead {
+  margin: 0 0 12px;
+  color: #aeb5bf;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.onboarding-steps {
+  margin: 0;
+  padding-left: 22px;
+  color: #d6d0c4;
+  display: grid;
+  gap: 14px;
+}
+
+.onboarding-steps li.done {
+  color: #9ccc65;
+}
+
+.onboarding-steps li.done .step-title::before {
+  content: '✓ ';
+  color: #9ccc65;
+}
+
+.step-title {
+  display: block;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+.onboarding-steps small {
+  display: block;
+  color: #8a9199;
+  line-height: 1.4;
+}
+
+.step-ack {
+  margin-top: 8px;
+}
+
+.link-inline {
+  display: inline-block;
+  margin-top: 12px;
+  color: #d4af37;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.workspace-onboarding .link-inline {
+  margin-top: 0;
+}
+
+.demo-app .topbar {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -337,6 +438,10 @@ input:focus {
   margin-bottom: 18px;
 }
 
+.kpi-grid--demo {
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+}
+
 .kpi-card {
   padding: 16px;
 }
@@ -515,6 +620,7 @@ input[type='file'] {
 
 @media (max-width: 560px) {
   .kpi-grid,
+  .kpi-grid--demo,
   .module-grid {
     grid-template-columns: 1fr;
   }

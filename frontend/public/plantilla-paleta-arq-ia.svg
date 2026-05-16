@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1040" viewBox="0 0 720 1040">
+  <rect width="720" height="1040" fill="#0b0d10"/>
+  <text x="360" y="44" fill="#d4af37" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle">ARC-IA - Paleta para planos</text>
+  <text x="360" y="72" fill="#aeb5bf" font-family="Inter, Arial, sans-serif" font-size="13" text-anchor="middle">Pinta en HSV/BGR sobre el PNG exportado de tu CAD. Escala: linea + numero legible.</text>
+
+  <g font-family="Inter, Arial, sans-serif" font-size="14" fill="#e8e4da">
+    <rect x="40" y="100" width="120" height="48" fill="#00ff66" rx="6"/>
+    <text x="180" y="118" font-weight="700">Escala</text>
+    <text x="180" y="138" fill="#aeb5bf" font-size="12">Verde fluor (trazo) + medida en negro cerca (OCR).</text>
+
+    <rect x="40" y="170" width="120" height="48" fill="#e53935" rx="6"/>
+    <text x="180" y="188" font-weight="700">Muros</text>
+    <text x="180" y="208" fill="#aeb5bf" font-size="12">Rojo intenso (ejes de muro).</text>
+
+    <rect x="40" y="240" width="120" height="48" fill="#bdbdbd" rx="6"/>
+    <text x="180" y="258" font-weight="700">Pisos (gris)</text>
+    <text x="180" y="278" fill="#aeb5bf" font-size="12">Gris claro relleno.</text>
+
+    <rect x="40" y="310" width="120" height="48" fill="#ff9800" rx="6"/>
+    <text x="180" y="328" font-weight="700">Pisos (naranja)</text>
+    <text x="180" y="348" fill="#aeb5bf" font-size="12">Alternativa / contraste con gris.</text>
+
+    <rect x="40" y="380" width="120" height="48" fill="#00e5ff" rx="6"/>
+    <text x="180" y="398" font-weight="700">Aberturas</text>
+    <text x="180" y="418" fill="#aeb5bf" font-size="12">Cian - contornos cerrados por unidad.</text>
+
+    <rect x="40" y="450" width="120" height="48" fill="#1565c0" rx="6"/>
+    <text x="180" y="468" font-weight="700">Agua fria</text>
+    <text x="180" y="488" fill="#aeb5bf" font-size="12">Azul.</text>
+
+    <rect x="40" y="520" width="120" height="48" fill="#d500f9" rx="6"/>
+    <text x="180" y="538" font-weight="700">Agua caliente</text>
+    <text x="180" y="558" fill="#aeb5bf" font-size="12">Magenta / fucsia (no rojo de muros).</text>
+
+    <rect x="40" y="590" width="120" height="48" fill="#6d4c41" rx="6"/>
+    <text x="180" y="608" font-weight="700">Cloacas</text>
+    <text x="180" y="628" fill="#aeb5bf" font-size="12">Sepia / marron (trazos separados del naranja de piso).</text>
+
+    <rect x="40" y="660" width="120" height="48" fill="#ffeb3b" rx="6"/>
+    <text x="180" y="678" font-weight="700">Electrica</text>
+    <text x="180" y="698" fill="#aeb5bf" font-size="12">Amarillo - canos vs cajas (grosor distinto).</text>
+
+    <rect x="40" y="730" width="120" height="48" fill="#aa00ff" rx="6"/>
+    <text x="180" y="748" font-weight="700">Techos / losas</text>
+    <text x="180" y="768" fill="#aeb5bf" font-size="12">Violeta fluor - area rellena.</text>
+
+    <rect x="40" y="800" width="120" height="48" fill="#424242" rx="6"/>
+    <text x="180" y="818" font-weight="700">Terrenos / lotes</text>
+    <text x="180" y="838" fill="#aeb5bf" font-size="12">Gris oscuro - poligonos cerrados por lote.</text>
+  </g>
+
+  <text x="360" y="920" fill="#8a9199" font-family="Inter, Arial, sans-serif" font-size="11" text-anchor="middle">Referencia visual. Ajusta saturacion y brillo para que el motor detecte rangos HSV.</text>
+</svg>

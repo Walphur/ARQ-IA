@@ -35,6 +35,16 @@ const postAuthWithFallback = async (path, payload) => {
   }
 };
 
+const postDemoCalcular = async (formData) => {
+  try {
+    return await axios.post(`${API_URL}/calcular`, formData);
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      return axios.post(`${API_URL}/api/calcular`, formData);
+    }
+    throw err;
+  }
+};
 
 const getErrorMessage = (err, fallback, authMode = null) => {
   const detail = String(err?.response?.data?.detail || '').toLowerCase();
@@ -66,6 +76,14 @@ function App() {
   const [mostrarGuia, setMostrarGuia] = useState(false);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
+  const [demoMode, setDemoMode] = useState(false);
+  const [demoRuns, setDemoRuns] = useState([]);
+  const [paletteDescargada, setPaletteDescargada] = useState(() => localStorage.getItem('arqia_palette_ok') === '1');
+  const [demoColoresOk, setDemoColoresOk] = useState(() => localStorage.getItem('arqia_demo_colores_ok') === '1');
+  const [workspaceOnboardingHecho, setWorkspaceOnboardingHecho] = useState(
+    () => localStorage.getItem('arqia_onboard_ws') === '1',
+  );
+  const [exportasteCsv, setExportasteCsv] = useState(false);
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: API_URL });
@@ -107,6 +125,13 @@ function App() {
   };
 
   useEffect(() => {
+    if (token) {
+      setDemoMode(false);
+      setDemoRuns([]);
+    }
+  }, [token]);
+
+  useEffect(() => {
     if (!token) return;
     Promise.all([refreshMe(), refreshProjects()]).catch(() => {
       localStorage.removeItem('arqia_token');
@@ -125,6 +150,7 @@ function App() {
         setMe(null);
       });
     }
+    setExportasteCsv(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId]);
 
@@ -148,6 +174,8 @@ function App() {
           : authForm;
       const res = await postAuthWithFallback(path, payload);
       localStorage.setItem('arqia_token', res.data.token);
+      setDemoMode(false);
+      setDemoRuns([]);
       setToken(res.data.token);
     } catch (err) {
       setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
@@ -179,6 +207,42 @@ function App() {
     } finally {
       setLoading('');
     }
+  };
+
+  const subirPlanoDemo = async (archivo, tipo) => {
+    if (!archivo) return;
+    const formData = new FormData();
+    formData.append('file', archivo);
+    formData.append('referencia_metros', referencia);
+    formData.append('tipo_plano', tipo);
+
+    setLoading(tipo);
+    setError('');
+    try {
+      const res = await postDemoCalcular(formData);
+      const data = res.data;
+      const id = `demo-${Date.now()}`;
+      setDemoRuns((prev) => [{ id, filename: archivo.name || 'plano', tipo: data.tipo || tipo, ...data }, ...prev].slice(0, 6));
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo procesar el plano en modo prueba.'));
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const marcarPaletaDescargada = () => {
+    localStorage.setItem('arqia_palette_ok', '1');
+    setPaletteDescargada(true);
+  };
+
+  const marcarDemoColoresOk = () => {
+    localStorage.setItem('arqia_demo_colores_ok', '1');
+    setDemoColoresOk(true);
+  };
+
+  const cerrarOnboardingWorkspace = () => {
+    localStorage.setItem('arqia_onboard_ws', '1');
+    setWorkspaceOnboardingHecho(true);
   };
 
   const subirPlano = async (archivo, tipo) => {
@@ -224,11 +288,11 @@ function App() {
       link.download = `arq-ia-obra-${activeProjectId}.csv`;
       link.click();
       window.URL.revokeObjectURL(url);
+      setExportasteCsv(true);
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo exportar la obra.'));
     }
   };
-
 
   const eliminarAnalisis = async (processId) => {
     if (!window.confirm('Eliminar este analisis?')) return;
@@ -253,6 +317,181 @@ function App() {
       setError(getErrorMessage(err, 'No se pudo eliminar la obra.'));
     }
   };
+
+  const demoGranTotal = demoRuns.filter((r) => r.tipo !== 'terreno').reduce((acc, r) => acc + Number(r.total || 0), 0);
+  const demoUltimo = demoRuns[0];
+
+  if (!token && demoMode) {
+    return (
+      <div className="App demo-app">
+        <header className="topbar demo-topbar" style={{ backgroundImage: `linear-gradient(to bottom, rgba(10,10,10,0.82), rgba(10,10,10,0.98)), url(${bannerFondo})` }}>
+          <div className="brand-block">
+            <img src="/logo.png" alt="ARC-IA" className="logo-img" />
+            <div>
+              <h1>ARC-IA</h1>
+              <p>Modo prueba — no guarda obras ni consume tu cupo</p>
+            </div>
+          </div>
+          <div className="top-actions">
+            <button type="button" className="nav-btn" onClick={() => setMostrarGuia(!mostrarGuia)}>Guia de colores</button>
+            <button
+              type="button"
+              className="nav-btn"
+              onClick={() => {
+                setAuthMode('register');
+                setDemoMode(false);
+                setError('');
+              }}
+            >
+              Crear estudio
+            </button>
+            <button type="button" className="nav-btn" onClick={() => { setDemoMode(false); setError(''); }}>
+              Volver al login
+            </button>
+          </div>
+        </header>
+
+        {mostrarGuia && (
+          <section className="guide-band">
+            <strong>Referencia rapida:</strong> Terrenos gris oscuro; Escala: linea verde fluor + medida en negro; Muros rojo; Pisos gris u naranja; Aberturas cian; Sanitario: azul (fria), magenta (caliente), sepia (cloaca); Electrico amarillo; Techos violeta fluor.
+          </section>
+        )}
+
+        <main className="workspace demo-workspace">
+          <aside className="sidebar demo-sidebar">
+            <div className="onboarding-card">
+              <span className="eyebrow">Primeros pasos</span>
+              <h2>Proba el motor en vivo</h2>
+              <p className="onboarding-lead">Segui la lista: no requiere cuenta. Para historial, exportacion y equipos, crea tu estudio.</p>
+              <ol className="onboarding-steps">
+                <li className={paletteDescargada ? 'done' : ''}>
+                  <span className="step-title">Descarga la paleta oficial (SVG)</span>
+                  <a
+                    className="link-inline"
+                    href="/plantilla-paleta-arq-ia.svg"
+                    download="plantilla-paleta-arq-ia.svg"
+                    onClick={marcarPaletaDescargada}
+                  >
+                    plantilla-paleta-arq-ia.svg
+                  </a>
+                </li>
+                <li className={demoColoresOk ? 'done' : ''}>
+                  <span className="step-title">Revisa colores y escala en el plano</span>
+                  <small>Linea verde fluor + numero legible (OCR). Si falla, usa escala manual abajo.</small>
+                  {!demoColoresOk && (
+                    <button type="button" className="nav-btn step-ack" onClick={marcarDemoColoresOk}>
+                      Entendido
+                    </button>
+                  )}
+                </li>
+                <li className={demoRuns.length > 0 ? 'done' : ''}>
+                  <span className="step-title">Subi un PNG, JPG o WebP</span>
+                  <small>Elegi un modulo y cargá tu plano. El resultado aparece al lado (no se guarda en servidor).</small>
+                </li>
+                <li>
+                  <span className="step-title">Guardar obra y CSV</span>
+                  <button type="button" className="nav-btn step-ack" onClick={() => { setAuthMode('register'); setDemoMode(false); setError(''); }}>
+                    Crear estudio gratis
+                  </button>
+                </li>
+              </ol>
+            </div>
+          </aside>
+
+          <section className="main-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">Panel de computo</span>
+                <h2>Modo demostracion</h2>
+                <p>Los analisis se muestran solo en este navegador. La API usa el mismo motor que en produccion, sin persistencia.</p>
+              </div>
+              <div className="panel-actions">
+                <label className="scale-control">
+                  Escala manual (m)
+                  <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
+                </label>
+                <div className="usage-pill">Escala detectada IA: {demoUltimo?.escala_detectada != null ? `${Number(demoUltimo.escala_detectada).toFixed(2)} m` : '-'}</div>
+              </div>
+            </div>
+
+            {error && <div className="error-box">{error}</div>}
+
+            <div className="kpi-grid kpi-grid--demo">
+              <div className="kpi-card">
+                <span>Total estimado (demo)</span>
+                <strong>{formatoMoneda(demoGranTotal)}</strong>
+              </div>
+              <div className="kpi-card">
+                <span>Analisis en esta sesion</span>
+                <strong>{demoRuns.length}</strong>
+              </div>
+              <div className="kpi-card">
+                <span>Ultimo modulo</span>
+                <strong>{demoUltimo?.tipo || 'Sin datos'}</strong>
+              </div>
+            </div>
+
+            <div className="module-grid">
+              {modulos.map((modulo) => (
+                <div className="modulo-card" key={modulo.tipo}>
+                  <div className="card-header">
+                    <span className="module-icon">{modulo.icono}</span>
+                    <div>
+                      <h3>{modulo.titulo}</h3>
+                      <p>Procesamiento puntual, sin guardar en tu estudio.</p>
+                    </div>
+                  </div>
+                  <label className="custom-file-upload">
+                    <input disabled={loading === modulo.tipo} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => subirPlanoDemo(e.target.files[0], modulo.tipo)} />
+                    {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
+                  </label>
+                </div>
+              ))}
+            </div>
+
+            {demoRuns.length === 0 && (
+              <div className="empty-state">
+                <h2>Todavia no procesaste ningun plano</h2>
+                <p>Usá la checklist a la izquierda y subi una imagen en cualquier modulo para ver desglose, total e imagen auditada.</p>
+              </div>
+            )}
+
+            {demoRuns.length > 0 && (
+              <>
+                <div className="total-band">
+                  <span>Total acumulado (solo visual, esta sesion)</span>
+                  <strong>{formatoMoneda(demoGranTotal)}</strong>
+                </div>
+                <div className="history-list">
+                  <h2>Resultados de prueba</h2>
+                  {demoRuns.map((run) => (
+                    <article className="history-card" key={run.id}>
+                      <div className="history-meta">
+                        <div>
+                          <h3>{run.filename}</h3>
+                          <p>{run.tipo} — analisis local de demostracion</p>
+                        </div>
+                        {run.tipo !== 'terreno' && <strong>{formatoMoneda(run.total)}</strong>}
+                      </div>
+                      <div className="desglose-list">
+                        {(run.items || []).map((item, index) => (
+                          <div key={index} className="desglose-item">
+                            <span>{item.nom}</span>
+                            <span className="precio-val">{run.tipo === 'terreno' ? item.val : formatoMoneda(item.val)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {run.imagen && <img className="img-audit" src={`data:image/png;base64,${run.imagen}`} alt="Auditoria visual" />}
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        </main>
+      </div>
+    );
+  }
 
   if (!token) {
     return (
@@ -299,6 +538,19 @@ function App() {
           <button className="primary-btn" disabled={loading === 'auth'}>
             {loading === 'auth' ? 'Procesando...' : authMode === 'login' ? 'Entrar' : 'Crear cuenta'}
           </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            disabled={loading === 'auth'}
+            onClick={() => {
+              setDemoMode(true);
+              setError('');
+              setMostrarGuia(false);
+            }}
+          >
+            Probar sin cuenta
+          </button>
+          <small className="auth-help">En modo prueba podes subir planos con el motor real; no se guardan en tu estudio.</small>
         </form>
       </div>
     );
@@ -319,6 +571,9 @@ function App() {
             {me?.studio?.used_this_month || 0}/{me?.studio?.monthly_limit || 0} planos
           </div>
           <div className="plan-pill">{planStatus}</div>
+          <a className="nav-btn" href="/plantilla-paleta-arq-ia.svg" download="plantilla-paleta-arq-ia.svg">
+            Paleta SVG
+          </a>
           <button className="nav-btn" onClick={() => setMostrarGuia(!mostrarGuia)}>Guia</button>
           <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
             Suscripcion
@@ -407,9 +662,39 @@ function App() {
           </div>
 
 
-          {activeProjectId && processes.length === 0 && (
-            <div className="guide-band">
-              <strong>Onboarding rapido:</strong> 1) Crea/selecciona obra 2) Carga tu primer plano 3) Exporta CSV para compartir con tu cliente.
+          {activeProjectId && !workspaceOnboardingHecho && (
+            <div className="onboarding-card workspace-onboarding">
+              <div className="onboarding-card-head">
+                <div>
+                  <span className="eyebrow">Primera obra en este workspace</span>
+                  <h2>Checklist guiada</h2>
+                  <p className="onboarding-lead">Segui estos pasos la primera vez; despues lo ocultas con un clic.</p>
+                </div>
+                <button type="button" className="nav-btn" onClick={cerrarOnboardingWorkspace}>
+                  No volver a mostrar
+                </button>
+              </div>
+              <ol className="onboarding-steps">
+                <li className={activeProjectId ? 'done' : ''}>
+                  <span className="step-title">Obra seleccionada</span>
+                  <small>Crea una obra en la barra lateral o elegi una existente.</small>
+                </li>
+                <li className={processes.length > 0 ? 'done' : ''}>
+                  <span className="step-title">Escala y primer plano</span>
+                  <small>Linea verde fluor + numero en el plano, o ajusta escala manual. Subi PNG/JPG/WebP en el modulo que corresponda.</small>
+                </li>
+                <li className={processes.length > 0 ? 'done' : ''}>
+                  <span className="step-title">Revisa auditoria visual</span>
+                  <small>En el historial verifica mascaras y totales antes de comprometer presupuesto.</small>
+                </li>
+                <li className={exportasteCsv ? 'done' : ''}>
+                  <span className="step-title">Exporta CSV (opcional)</span>
+                  <small>Comparti desglose con cliente u homologacion interna.</small>
+                </li>
+              </ol>
+              <a className="link-inline" href="/plantilla-paleta-arq-ia.svg" download="plantilla-paleta-arq-ia.svg">
+                Descargar plantilla de colores (SVG)
+              </a>
             </div>
           )}
 

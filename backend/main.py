@@ -510,6 +510,7 @@ async def calcular_en_obra(
 
 
 @app.post("/calcular")
+@app.post("/api/calcular")
 async def calcular_demo(
     file: UploadFile = File(...),
     referencia_metros: float = Form(...),
