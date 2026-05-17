@@ -112,36 +112,88 @@ def obtener_precios_en_vivo():
 def _li(nom, val, origen):
     return {"nom": nom, "val": val, "origen": origen}
 
+def _primer_float_en_texto(texto: str):
+    if not texto:
+        return None
+    numeros = re.findall(r"\d+[.,]?\d*", texto)
+    if not numeros:
+        return None
+    try:
+        return float(numeros[0].replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _ocr_float_desde_gris(prep_gray):
+    """Devuelve el primer numero razonable (metros de cota) leido por Tesseract."""
+    if prep_gray is None or prep_gray.size == 0:
+        return None
+    h, w = prep_gray.shape[:2]
+    if h < 6 or w < 6:
+        return None
+    scale = max(1.0, 140.0 / max(h, w))
+    if scale > 1.02:
+        prep_gray = cv2.resize(prep_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    def leer(img_gray):
+        for cfg in ("--psm 7", "--psm 11", "--psm 6"):
+            t = pytesseract.image_to_string(img_gray, config=cfg)
+            v = _primer_float_en_texto(t)
+            if v is not None and 0.05 < v < 500:
+                return v
+        for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+            r = cv2.rotate(img_gray, rot)
+            for cfg in ("--psm 11", "--psm 7"):
+                t = pytesseract.image_to_string(r, config=cfg)
+                v = _primer_float_en_texto(t)
+                if v is not None and 0.05 < v < 500:
+                    return v
+        return None
+
+    return leer(prep_gray)
+
+
 def extraer_numero_escala(img, mask_verde):
-    # (El código de OCR queda igual, está perfecto)
     contornos, _ = cv2.findContours(mask_verde, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contornos: return None
-    
+    if not contornos:
+        return None
+
     c = max(contornos, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(c)
-    
-    margen = 40
-    y1, y2 = max(0, y - margen), min(img.shape[0], y + h + margen)
-    x1, x2 = max(0, x - margen), min(img.shape[1], x + w + margen)
+
+    margen_x = 90
+    margen_y_arriba = 55
+    margen_y_abajo = 150
+    y1 = max(0, y - margen_y_arriba)
+    y2 = min(img.shape[0], y + h + margen_y_abajo)
+    x1 = max(0, x - margen_x)
+    x2 = min(img.shape[1], x + w + margen_x)
     roi = img[y1:y2, x1:x2]
-    
+
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    preparaciones = []
+
+    mask_amarillo = cv2.inRange(hsv_roi, np.array([10, 55, 55]), np.array([50, 255, 255]))
+    k3 = np.ones((3, 3), np.uint8)
+    mask_amarillo = cv2.dilate(mask_amarillo, k3, iterations=2)
+    if np.sum(mask_amarillo) > 60:
+        preparaciones.append(cv2.bitwise_not(mask_amarillo))
+
     gris = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, binario = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    
-    texto = pytesseract.image_to_string(binario, config='--psm 11')
-    numeros = re.findall(r'\d+[.,]?\d*', texto)
-    if numeros: return float(numeros[0].replace(',', '.'))
+    media = float(np.mean(gris))
+    base = cv2.bitwise_not(gris) if media < 115 else gris
+    _, otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, otsu_inv = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    preparaciones.extend([otsu, otsu_inv])
 
-    binario_rotado1 = cv2.rotate(binario, cv2.ROTATE_90_CLOCKWISE)
-    texto1 = pytesseract.image_to_string(binario_rotado1, config='--psm 11')
-    numeros1 = re.findall(r'\d+[.,]?\d*', texto1)
-    if numeros1: return float(numeros1[0].replace(',', '.'))
+    _, b0 = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    preparaciones.extend([b0, cv2.bitwise_not(b0)])
 
-    binario_rotado2 = cv2.rotate(binario, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    texto2 = pytesseract.image_to_string(binario_rotado2, config='--psm 11')
-    numeros2 = re.findall(r'\d+[.,]?\d*', texto2)
-    if numeros2: return float(numeros2[0].replace(',', '.'))
-
+    for prep in preparaciones:
+        v = _ocr_float_desde_gris(prep)
+        if v is not None:
+            return v
     return None
 
 # --- FUNCIÓN DEFINITIVA: CONVOLUCIÓN DE ESQUELETOS PARA CAÑERÍAS ---

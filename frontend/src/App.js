@@ -217,6 +217,8 @@ function App() {
   const [invitations, setInvitations] = useState([]);
   const [inviteForm, setInviteForm] = useState({ email: '', role: 'editor' });
   const [lastInviteUrl, setLastInviteUrl] = useState('');
+  const [lastDemoUpload, setLastDemoUpload] = useState(null);
+  const [lastUploadByProject, setLastUploadByProject] = useState({});
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: API_URL });
@@ -265,6 +267,7 @@ function App() {
     if (token) {
       setDemoMode(false);
       setDemoRuns([]);
+      setLastDemoUpload(null);
     }
   }, [token]);
 
@@ -380,6 +383,7 @@ function App() {
       localStorage.setItem('arqia_token', res.data.token);
       setDemoMode(false);
       setDemoRuns([]);
+      setLastUploadByProject({});
       setToken(res.data.token);
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo completar el registro con la invitacion.'));
@@ -410,6 +414,7 @@ function App() {
       localStorage.setItem('arqia_token', res.data.token);
       setDemoMode(false);
       setDemoRuns([]);
+      setLastUploadByProject({});
       setToken(res.data.token);
     } catch (err) {
       setError(getErrorMessage(err, authMode === 'login' ? 'No se pudo iniciar sesion.' : 'No se pudo crear la cuenta.', authMode));
@@ -424,6 +429,8 @@ function App() {
     setMe(null);
     setProjects([]);
     setProcesses([]);
+    setLastDemoUpload(null);
+    setLastUploadByProject({});
   };
 
   const createProject = async (event) => {
@@ -477,6 +484,7 @@ function App() {
           ...prev,
         ].slice(0, 6),
       );
+      setLastDemoUpload({ file: archivo, tipo: data.tipo || tipo });
       fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo procesar el plano en modo prueba.'));
@@ -525,6 +533,7 @@ function App() {
     setError('');
     try {
       await api.post(`/projects/${activeProjectId}/calcular`, formData);
+      setLastUploadByProject((m) => ({ ...m, [String(activeProjectId)]: { file: archivo, tipo } }));
       await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
       fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
@@ -636,9 +645,15 @@ function App() {
   const eliminarObra = async () => {
     if (!activeProjectId || !window.confirm('Eliminar esta obra y todo su historial?')) return;
     setError('');
+    const pid = String(activeProjectId);
     try {
       await api.delete(`/projects/${activeProjectId}`);
       setActiveProjectId('');
+      setLastUploadByProject((m) => {
+        const n = { ...m };
+        delete n[pid];
+        return n;
+      });
       await Promise.all([refreshProjects(), refreshMe()]);
       setProcesses([]);
     } catch (err) {
@@ -646,7 +661,11 @@ function App() {
     }
   };
 
-  const ScalePanel = ({ ultimo }) => {
+  const eliminarDemoRun = (runId) => {
+    setDemoRuns((prev) => prev.filter((r) => r.id !== runId));
+  };
+
+  const ScalePanel = ({ ultimo, onAplicarManual }) => {
     const modo = ultimo?.meta?.escala_modo;
     const ocrRaw = ultimo?.escala_detectada;
     const ocrNum = ocrRaw != null && ocrRaw !== '' && !Number.isNaN(Number(ocrRaw)) ? Number(ocrRaw) : null;
@@ -671,17 +690,33 @@ function App() {
         <div className="scale-panel-cols">
           <div className="scale-field">
             <label htmlFor="ref-metros">Respaldo manual</label>
-            <div className="scale-input-wrap">
-              <input
-                id="ref-metros"
-                type="number"
-                min="0.1"
-                step="0.1"
-                value={referencia}
-                onChange={(e) => setReferencia(e.target.value)}
-              />
-              <span className="scale-suffix">m</span>
-            </div>
+            <form
+              className="scale-manual-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (onAplicarManual) onAplicarManual();
+              }}
+            >
+              <div className="scale-input-wrap">
+                <input
+                  id="ref-metros"
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={referencia}
+                  onChange={(e) => setReferencia(e.target.value)}
+                />
+                <span className="scale-suffix">m</span>
+              </div>
+              {onAplicarManual && (
+                <div className="scale-apply-row">
+                  <button type="submit" className="scale-apply-btn nav-btn">
+                    Aplicar escala
+                  </button>
+                  <span className="scale-apply-hint">Enter reaplica el ultimo plano subido.</span>
+                </div>
+              )}
+            </form>
             <p className="scale-hint">Metros del segmento verde si el OCR no lee el numero.</p>
           </div>
           <div className={`scale-field scale-readout${!tieneDato ? ' is-empty' : ''}`}>
@@ -734,12 +769,13 @@ function App() {
               onClick={() => {
                 setAuthMode('register');
                 setDemoMode(false);
+                setLastDemoUpload(null);
                 setError('');
               }}
             >
               Crear estudio
             </button>
-            <button type="button" className="nav-btn" onClick={() => { setDemoMode(false); setError(''); }}>
+            <button type="button" className="nav-btn" onClick={() => { setDemoMode(false); setLastDemoUpload(null); setError(''); }}>
               Volver al login
             </button>
           </div>
@@ -781,7 +817,7 @@ function App() {
                 </li>
                 <li>
                   <span className="step-title">Guardar obra y CSV</span>
-                  <button type="button" className="nav-btn step-ack" onClick={() => { setAuthMode('register'); setDemoMode(false); setError(''); }}>
+                  <button type="button" className="nav-btn step-ack" onClick={() => { setAuthMode('register'); setDemoMode(false); setLastDemoUpload(null); setError(''); }}>
                     Crear estudio gratis
                   </button>
                 </li>
@@ -814,7 +850,10 @@ function App() {
             </div>
 
             <div className="demo-calibration-card">
-              <ScalePanel ultimo={demoUltimo} />
+              <ScalePanel
+                ultimo={demoUltimo}
+                onAplicarManual={lastDemoUpload ? () => subirPlanoDemo(lastDemoUpload.file, lastDemoUpload.tipo) : null}
+              />
             </div>
 
             <div className="sample-actions">
@@ -822,7 +861,9 @@ function App() {
               <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', true)}>
                 {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
               </button>
-              <small className="auth-help">PNG incluido en el sitio: escala verde + numero, muros rojos y piso gris.</small>
+              <small className="auth-help">
+                PNG de ejemplo (fondo oscuro): linea verde, cota 7,30 m en blanco, muros rojos. Deberia leerse por OCR como en tu plano.
+              </small>
             </div>
 
             <div className="module-grid">
@@ -868,7 +909,12 @@ function App() {
                             <p className="escala-modo-pill">Escala: {run.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : run.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}</p>
                           )}
                         </div>
-                        {run.tipo !== 'terreno' && <strong>{formatoMoneda(run.total)}</strong>}
+                        <div className="history-meta-aside">
+                          {run.tipo !== 'terreno' && <strong>{formatoMoneda(run.total)}</strong>}
+                          <button type="button" className="nav-btn history-quitar-btn" onClick={() => eliminarDemoRun(run.id)}>
+                            Quitar
+                          </button>
+                        </div>
                       </div>
                       {(run.meta?.avisos || []).length > 0 && (
                         <div className="meta-avisos">
@@ -981,6 +1027,7 @@ function App() {
             disabled={loading === 'auth'}
             onClick={() => {
               setDemoMode(true);
+              setLastDemoUpload(null);
               setError('');
               setMostrarGuia(false);
             }}
@@ -995,6 +1042,8 @@ function App() {
       </div>
     );
   }
+
+  const ultimoPlanoObra = activeProjectId ? lastUploadByProject[String(activeProjectId)] : null;
 
   return (
     <div className="App">
@@ -1132,7 +1181,10 @@ function App() {
                 <p>{activeProject?.client || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
               </div>
               <div className="panel-header-aside">
-                <ScalePanel ultimo={lastProcess} />
+                <ScalePanel
+                  ultimo={lastProcess}
+                  onAplicarManual={ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null}
+                />
                 <div className="panel-toolbar">
                   <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>
                     Exportar CSV
