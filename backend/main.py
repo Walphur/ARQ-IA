@@ -14,12 +14,12 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, create_engine
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
-from motor_ia import procesar_plano_ia
+from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from fpdf import FPDF
 
 
@@ -139,6 +139,7 @@ class Process(Base):
     items = Column(JsonColumn, nullable=False)
     total = Column(Float, nullable=False, default=0)
     escala_detectada = Column(Float, nullable=True)
+    result_meta = Column(JsonColumn, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
     project = relationship("Project", back_populates="processes")
@@ -178,6 +179,24 @@ def get_db():
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    ensure_process_result_meta_column()
+
+
+def ensure_process_result_meta_column():
+    inspector = inspect(engine)
+    if "processes" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("processes")}
+    if "result_meta" in cols:
+        return
+    if DATABASE_URL.startswith("sqlite"):
+        ddl = "ALTER TABLE processes ADD COLUMN result_meta TEXT"
+    elif "postgresql" in DATABASE_URL:
+        ddl = "ALTER TABLE processes ADD COLUMN result_meta JSONB"
+    else:
+        ddl = "ALTER TABLE processes ADD COLUMN result_meta JSON"
+    with engine.begin() as conn:
+        conn.execute(text(ddl))
 
 
 def hash_password(password: str) -> str:
@@ -241,6 +260,7 @@ def serialize_process(process: Process) -> dict:
         "total": process.total,
         "imagen": process.audit_image_base64,
         "escala_detectada": process.escala_detectada,
+        "meta": process.result_meta or {},
         "created_at": process.created_at.isoformat(),
         "user": process.user.name if process.user else None,
     }
@@ -248,9 +268,15 @@ def serialize_process(process: Process) -> dict:
 
 def validate_upload(file: UploadFile, contenido: bytes):
     if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(status_code=400, detail="Formato no soportado. Subi una imagen PNG, JPG o WEBP.")
+        raise HTTPException(
+            status_code=400,
+            detail="Formato no soportado. Usa PNG, JPG/JPEG o WEBP (exporta tu plano como imagen desde el CAD).",
+        )
     if len(contenido) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"El archivo supera el limite de {MAX_UPLOAD_MB} MB.")
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo supera {MAX_UPLOAD_MB} MB. Comprimí la imagen o subi menor resolucion.",
+        )
 
 
 def month_start() -> datetime:
@@ -274,7 +300,7 @@ def ensure_usage_available(db: Session, studio: Studio):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "arq-ia-backend", "version": APP_VERSION, "health": "/health", "register": "/auth/register", "login": "/auth/login"}
+    return {"status": "ok", "service": "arq-ia-backend", "version": APP_VERSION, "health": "/health", "precios_info": "/precios-info", "register": "/auth/register", "login": "/auth/login"}
 
 
 @app.get("/api/health")
@@ -284,6 +310,14 @@ async def health_api():
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/precios-info")
+@app.get("/api/precios-info")
+def precios_info():
+    """Ultima lectura de tabla de precios (cache + fuente). No requiere auth."""
+    obtener_precios_en_vivo()
+    return get_precios_info()
 
 
 @app.post("/auth/register")
@@ -489,8 +523,16 @@ async def calcular_en_obra(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="No se pudo procesar el plano.") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al procesar la imagen. Revisa formato, tamano y que el servicio de OCR este disponible.",
+        ) from exc
 
+    result_meta = {
+        "escala_modo": resultados.get("escala_modo"),
+        "precios_info": resultados.get("precios_info"),
+        "avisos": resultados.get("avisos") or [],
+    }
     process = Process(
         project_id=project.id,
         user_id=user.id,
@@ -502,6 +544,7 @@ async def calcular_en_obra(
         items=resultados["items"],
         total=float(resultados.get("total") or 0),
         escala_detectada=resultados.get("escala_detectada"),
+        result_meta=result_meta,
     )
     db.add(process)
     db.commit()
@@ -524,7 +567,10 @@ async def calcular_demo(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="No se pudo procesar el plano.") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al procesar la imagen. Proba con otro PNG/JPG o mas tarde.",
+        ) from exc
 
 
 @app.post("/billing/create-checkout-session")

@@ -8,6 +8,31 @@ const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
 const useDefaultApi = window.location.hostname !== 'localhost' && ENV_API_URL.includes('.onrender.com');
 const API_URL = ((useDefaultApi ? DEFAULT_API_URL : (ENV_API_URL || DEFAULT_API_URL))).replace(/\/+$/, '');
 
+const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARC-IA').trim();
+const SUPPORT_WA_DIGITS = (process.env.REACT_APP_SUPPORT_WHATSAPP || '').replace(/\D/g, '');
+const SUPPORT_WA_HREF = SUPPORT_WA_DIGITS ? `https://wa.me/${SUPPORT_WA_DIGITS}` : null;
+
+const textoLineaPrecios = (info) => {
+  if (!info || !info.actualizado_en) return 'Precios: aun no sincronizados con el servidor.';
+  const when = new Date(info.actualizado_en).toLocaleString('es-AR');
+  const fuente = info.fuente === 'google_sheets' ? 'Google Sheets (CSV)' : 'lista local (fallback)';
+  const cache = info.desde_cache ? ' · sirviendo desde cache' : '';
+  return `${fuente} · ref. ${when}${cache}`;
+};
+
+const fetchPreciosInfoPublico = async () => {
+  try {
+    const r = await axios.get(`${API_URL}/precios-info`);
+    return r.data;
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      const r = await axios.get(`${API_URL}/api/precios-info`);
+      return r.data;
+    }
+    return null;
+  }
+};
+
 const modulos = [
   { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M' },
   { tipo: 'agua', titulo: 'Instalacion sanitaria y gas', icono: 'A' },
@@ -47,11 +72,17 @@ const postDemoCalcular = async (formData) => {
 };
 
 const getErrorMessage = (err, fallback, authMode = null) => {
-  const detail = String(err?.response?.data?.detail || '').toLowerCase();
-  if (authMode === 'login' && (detail.includes('email o clave incorrectos') || err?.response?.status === 401)) {
+  const status = err?.response?.status;
+  const detail = String(err?.response?.data?.detail || '').trim();
+  if (status === 413 && detail) return detail;
+  if (status === 413) return 'El archivo es demasiado grande. Comprimí la imagen o subi menor resolucion.';
+  if (status === 400 && detail) return detail;
+  if (status === 500 && detail) return detail;
+  const detailLower = detail.toLowerCase();
+  if (authMode === 'login' && (detailLower.includes('email o clave incorrectos') || status === 401)) {
     return 'No existe una cuenta con esos datos o la clave es incorrecta. Primero crea tu usuario en "Crear estudio".';
   }
-  if (err?.response?.data?.detail) return err.response.data.detail;
+  if (detail) return detail;
   if (err?.message === 'Network Error') {
     return 'No se pudo conectar con el servidor. Verifica REACT_APP_API_URL, CORS y que la API este online.';
   }
@@ -84,6 +115,7 @@ function App() {
     () => localStorage.getItem('arqia_onboard_ws') === '1',
   );
   const [exportasteCsv, setExportasteCsv] = useState(false);
+  const [preciosInfo, setPreciosInfo] = useState(null);
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: API_URL });
@@ -123,6 +155,10 @@ function App() {
     const res = await api.get(`/projects/${projectId}/processes`);
     setProcesses(res.data);
   };
+
+  useEffect(() => {
+    fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => setPreciosInfo(null));
+  }, [token, demoMode]);
 
   useEffect(() => {
     if (token) {
@@ -222,11 +258,45 @@ function App() {
       const res = await postDemoCalcular(formData);
       const data = res.data;
       const id = `demo-${Date.now()}`;
-      setDemoRuns((prev) => [{ id, filename: archivo.name || 'plano', tipo: data.tipo || tipo, ...data }, ...prev].slice(0, 6));
+      const meta = {
+        escala_modo: data.escala_modo,
+        avisos: data.avisos || [],
+        precios_info: data.precios_info || {},
+      };
+      setDemoRuns((prev) =>
+        [
+          {
+            id,
+            filename: archivo.name || 'plano',
+            tipo: data.tipo || tipo,
+            items: data.items || [],
+            total: data.total,
+            imagen: data.imagen,
+            escala_detectada: data.escala_detectada,
+            meta,
+          },
+          ...prev,
+        ].slice(0, 6),
+      );
+      fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo procesar el plano en modo prueba.'));
     } finally {
       setLoading('');
+    }
+  };
+
+  const cargarPlanoMuestra = async (tipo, enDemo) => {
+    setError('');
+    try {
+      const r = await fetch(`${window.location.origin}/plano-muestra.png`);
+      if (!r.ok) throw new Error('missing');
+      const blob = await r.blob();
+      const f = new File([blob], 'plano-muestra.png', { type: 'image/png' });
+      if (enDemo) await subirPlanoDemo(f, tipo);
+      else await subirPlano(f, tipo);
+    } catch (err) {
+      setError('No se encontro plano-muestra.png en el sitio. Volvé a desplegar el frontend con el archivo en public/.');
     }
   };
 
@@ -257,6 +327,7 @@ function App() {
     try {
       await api.post(`/projects/${activeProjectId}/calcular`, formData);
       await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
+      fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo procesar el plano.'));
     } finally {
@@ -326,9 +397,9 @@ function App() {
       <div className="App demo-app">
         <header className="topbar demo-topbar" style={{ backgroundImage: `linear-gradient(to bottom, rgba(10,10,10,0.82), rgba(10,10,10,0.98)), url(${bannerFondo})` }}>
           <div className="brand-block">
-            <img src="/logo.png" alt="ARC-IA" className="logo-img" />
+            <img src="/logo.png" alt={SITE_NAME} className="logo-img" />
             <div>
-              <h1>ARC-IA</h1>
+              <h1>{SITE_NAME}</h1>
               <p>Modo prueba — no guarda obras ni consume tu cupo</p>
             </div>
           </div>
@@ -350,6 +421,7 @@ function App() {
             </button>
           </div>
         </header>
+        <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando con la API...'}</div>
 
         {mostrarGuia && (
           <section className="guide-band">
@@ -431,6 +503,14 @@ function App() {
               </div>
             </div>
 
+            <div className="sample-actions">
+              <span className="eyebrow">Cero archivos</span>
+              <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', true)}>
+                {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
+              </button>
+              <small className="auth-help">PNG incluido en el sitio: escala verde + numero, muros rojos y piso gris.</small>
+            </div>
+
             <div className="module-grid">
               {modulos.map((modulo) => (
                 <div className="modulo-card" key={modulo.tipo}>
@@ -470,13 +550,26 @@ function App() {
                         <div>
                           <h3>{run.filename}</h3>
                           <p>{run.tipo} — analisis local de demostracion</p>
+                          {run.meta?.escala_modo && (
+                            <p className="escala-modo-pill">Escala: {run.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : run.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}</p>
+                          )}
                         </div>
                         {run.tipo !== 'terreno' && <strong>{formatoMoneda(run.total)}</strong>}
                       </div>
+                      {(run.meta?.avisos || []).length > 0 && (
+                        <div className="meta-avisos">
+                          {(run.meta.avisos || []).map((a, i) => (
+                            <p key={i}>{a}</p>
+                          ))}
+                        </div>
+                      )}
                       <div className="desglose-list">
                         {(run.items || []).map((item, index) => (
                           <div key={index} className="desglose-item">
-                            <span>{item.nom}</span>
+                            <div>
+                              <span>{item.nom}</span>
+                              {item.origen && <small className="item-origen">{item.origen}</small>}
+                            </div>
                             <span className="precio-val">{run.tipo === 'terreno' ? item.val : formatoMoneda(item.val)}</span>
                           </div>
                         ))}
@@ -497,10 +590,10 @@ function App() {
     return (
       <div className="auth-page" style={{ backgroundImage: `linear-gradient(rgba(8,8,8,.78), rgba(8,8,8,.95)), url(${bannerFondo})` }}>
         <div className="auth-shell">
-          <img src="/logo.png" alt="ARC-IA" className="auth-logo" />
+          <img src="/logo.png" alt={SITE_NAME} className="auth-logo" />
           <div>
             <span className="eyebrow">SaaS para estudios de arquitectura</span>
-            <h1>ARC-IA</h1>
+            <h1>{SITE_NAME}</h1>
             <p>Computo de obra, terrenos e instalaciones con auditoria visual, historial por proyecto y exportacion.</p>
             <div className="auth-points">
               <span>Historial por obra</span>
@@ -510,6 +603,7 @@ function App() {
           </div>
         </div>
 
+        <div className="auth-right-column">
         <form className="auth-card" onSubmit={submitAuth}>
           <div>
             <span className="eyebrow">Acceso privado</span>
@@ -552,6 +646,8 @@ function App() {
           </button>
           <small className="auth-help">En modo prueba podes subir planos con el motor real; no se guardan en tu estudio.</small>
         </form>
+        <div className="precios-bar auth-precios">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
+        </div>
       </div>
     );
   }
@@ -560,9 +656,9 @@ function App() {
     <div className="App">
       <header className="topbar" style={{ backgroundImage: `linear-gradient(to bottom, rgba(10,10,10,0.82), rgba(10,10,10,0.98)), url(${bannerFondo})` }}>
         <div className="brand-block">
-          <img src="/logo.png" alt="ARC-IA" className="logo-img" />
+          <img src="/logo.png" alt={SITE_NAME} className="logo-img" />
           <div>
-            <h1>ARC-IA</h1>
+            <h1>{SITE_NAME}</h1>
             <p>{me?.studio?.name || 'Estudio'}</p>
           </div>
         </div>
@@ -578,10 +674,15 @@ function App() {
           <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
             Suscripcion
           </button>
-          <a className="nav-btn" href="https://wa.me/5490000000000" target="_blank" rel="noreferrer">Soporte</a>
+          {SUPPORT_WA_HREF && (
+            <a className="nav-btn" href={SUPPORT_WA_HREF} target="_blank" rel="noreferrer">
+              Soporte
+            </a>
+          )}
           <button className="nav-btn" onClick={logout}>Salir</button>
         </div>
       </header>
+      <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
 
       {mostrarGuia && (
         <section className="guide-band">
@@ -618,6 +719,14 @@ function App() {
               </button>
             ))}
             {projects.length === 0 && <p className="empty-text">Crea una obra para empezar a guardar historial.</p>}
+          </div>
+
+          <div className="onboarding-card equipo-card">
+            <span className="eyebrow">Equipo</span>
+            <h2>Invitaciones</h2>
+            <p className="onboarding-lead">
+              Proximamente vas a poder invitar por email a colegas del estudio con rol editor o solo lectura, sin compartir la misma clave.
+            </p>
           </div>
         </aside>
 
@@ -722,6 +831,16 @@ function App() {
             ))}
           </div>
 
+          {activeProjectId && (
+            <div className="sample-actions">
+              <span className="eyebrow">Demo rapida</span>
+              <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', false)}>
+                {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
+              </button>
+              <small className="auth-help">Mismo PNG de demostracion; se guarda como un analisis mas en esta obra.</small>
+            </div>
+          )}
+
           {processes.length === 0 && (
             <div className="empty-state">
               <h2>{activeProjectId ? 'Carga el primer plano de esta obra' : 'Crea o selecciona una obra'}</h2>
@@ -744,13 +863,28 @@ function App() {
                       <div>
                         <h3>{process.filename}</h3>
                         <p>{process.tipo} - {new Date(process.created_at).toLocaleString('es-AR')}</p>
+                        {process.meta?.escala_modo && (
+                          <p className="escala-modo-pill">
+                            Escala: {process.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : process.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}
+                          </p>
+                        )}
                       </div>
                       {process.tipo !== 'terreno' && <strong>{formatoMoneda(process.total)}</strong>}
                     </div>
+                    {(process.meta?.avisos || []).length > 0 && (
+                      <div className="meta-avisos">
+                        {(process.meta.avisos || []).map((a, i) => (
+                          <p key={i}>{a}</p>
+                        ))}
+                      </div>
+                    )}
                     <div className="desglose-list">
                       {process.items.map((item, index) => (
                         <div key={index} className="desglose-item">
-                          <span>{item.nom}</span>
+                          <div>
+                            <span>{item.nom}</span>
+                            {item.origen && <small className="item-origen">{item.origen}</small>}
+                          </div>
                           <span className="precio-val">{process.tipo === 'terreno' ? item.val : formatoMoneda(item.val)}</span>
                         </div>
                       ))}

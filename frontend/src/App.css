@@ -105,6 +105,79 @@ button {
   padding: 24px;
 }
 
+.auth-right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.precios-bar {
+  padding: 10px 14px;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: #9aa3ae;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid #2b3037;
+  border-radius: 6px;
+}
+
+.auth-precios {
+  margin-top: 0;
+}
+
+.sample-actions {
+  margin: 16px 0 8px;
+  padding: 14px 16px;
+  border: 1px dashed #3d424a;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.meta-avisos {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 6px;
+  color: #e8dcc8;
+  font-size: 0.85rem;
+}
+
+.meta-avisos p {
+  margin: 0 0 6px;
+}
+
+.meta-avisos p:last-child {
+  margin-bottom: 0;
+}
+
+.item-origen {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #7a8490;
+  font-weight: 400;
+}
+
+.escala-modo-pill {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  color: #9ccc65;
+  font-weight: 700;
+}
+
+.equipo-card h2 {
+  font-size: 1rem;
+}
+
+.desglose-item > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
 .auth-card h2 {
   margin: 6px 0 0;
   color: #fff;

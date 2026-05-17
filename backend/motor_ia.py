@@ -7,51 +7,110 @@ import codecs
 import pytesseract
 import re
 import os
+import time
+from datetime import datetime, timezone
 
 # RUTA DE TESSERACT (Mantené la tuya)
 pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", "tesseract")
 
-def obtener_precios_en_vivo():
-    # Asegurate de que esta URL sea la correcta y esté publicada como CSV
-    url_csv = "https://docs.google.com/spreadsheets/d/1fmULPVz8YeKJT9jLyGRy6ZBOLpXz-wfgJSaF_Br5s28/export?format=csv"
-    
-    # DICCIONARIO BASE ACTUALIZADO (Por si falla internet, usa estos)
-    P = {
-        # Base Muros y Pisos
-        'mat_cemento_25kg': 8000, 'mat_cal_25kg': 5500, 'mat_arena_m3': 15000, 
-        'mat_escombro_m3': 8500, 'mat_ladrillo_hueco_18cm': 1600, 'mat_ladrillo_hueco_12cm': 1000,
-        'mat_ladrillo_comun_12cm': 400, 'mat_ceramico_m2': 8500, 'mat_pegamento_30kg': 15600, 
-        'mat_abertura_promedio': 100000, 'mo_muro_hueco_m2': 12000, 'mo_muro_comun_m2': 13000, 
-        'mo_revoque_doble_m2': 20000, 'mo_contrapiso_m2': 13000, 'mo_carpeta_m2': 12000, 
-        'mo_ceramico_m2': 15000, 'mo_abertura_unid': 70000,
-        
-        # NUEVOS IDs - AGUA
-        'AGUA-MAT-01': 1298, 'AGUA-ACC-CODO': 258, 'AGUA-ACC-TE': 793, 
-        'AGUA-MO-01': 38000, 'AGUA-BOCA-01': 50000,
-        'CLOA-MAT-01': 6070, 'CLOA-MO-01': 32000,
-        
-        # NUEVOS IDs - LUZ
-        'LUZ-MAT-01': 1200, 'LUZ-MO-01': 38000, 
-        'LUZ-MAT-02': 5000, 'LUZ-MO-02': 49000,
-        
-        # NUEVOS IDs - TECHOS
-        'TECH-CHAP-01': 22000, 'TECH-PERF-01': 21000, 'TECH-AISL-01': 12000, 
-        'TECH-TORN-01': 1100, 'TECH-MO-01': 30000
+PRECIOS_CACHE_SEGUNDOS = int(os.getenv("PRECIOS_CACHE_SEGUNDOS", "300"))
+SHEETS_TIMEOUT_SEC = int(os.getenv("SHEETS_TIMEOUT_SEC", "12"))
+
+_precios_cache = None
+_precios_cache_ts = 0.0
+LAST_PRECIO_META = {
+    "actualizado_en": None,
+    "fuente": "offline",
+    "desde_cache": False,
+}
+
+
+def _precios_base_offline():
+    return {
+        "mat_cemento_25kg": 8000,
+        "mat_cal_25kg": 5500,
+        "mat_arena_m3": 15000,
+        "mat_escombro_m3": 8500,
+        "mat_ladrillo_hueco_18cm": 1600,
+        "mat_ladrillo_hueco_12cm": 1000,
+        "mat_ladrillo_comun_12cm": 400,
+        "mat_ceramico_m2": 8500,
+        "mat_pegamento_30kg": 15600,
+        "mat_abertura_promedio": 100000,
+        "mo_muro_hueco_m2": 12000,
+        "mo_muro_comun_m2": 13000,
+        "mo_revoque_doble_m2": 20000,
+        "mo_contrapiso_m2": 13000,
+        "mo_carpeta_m2": 12000,
+        "mo_ceramico_m2": 15000,
+        "mo_abertura_unid": 70000,
+        "AGUA-MAT-01": 1298,
+        "AGUA-ACC-CODO": 258,
+        "AGUA-ACC-TE": 793,
+        "AGUA-MO-01": 38000,
+        "AGUA-BOCA-01": 50000,
+        "CLOA-MAT-01": 6070,
+        "CLOA-MO-01": 32000,
+        "LUZ-MAT-01": 1200,
+        "LUZ-MO-01": 38000,
+        "LUZ-MAT-02": 5000,
+        "LUZ-MO-02": 49000,
+        "TECH-CHAP-01": 22000,
+        "TECH-PERF-01": 21000,
+        "TECH-AISL-01": 12000,
+        "TECH-TORN-01": 1100,
+        "TECH-MO-01": 30000,
     }
-    
+
+
+def get_precios_info():
+    """Estado de la ultima lectura de precios (para UI /health)."""
+    global LAST_PRECIO_META, _precios_cache_ts
+    meta = {**LAST_PRECIO_META}
+    if _precios_cache_ts:
+        meta["cache_edad_segundos"] = int(max(0, time.time() - _precios_cache_ts))
+    return meta
+
+
+def obtener_precios_en_vivo():
+    global _precios_cache, _precios_cache_ts, LAST_PRECIO_META
+    now = time.time()
+    if _precios_cache is not None and (now - _precios_cache_ts) < PRECIOS_CACHE_SEGUNDOS:
+        LAST_PRECIO_META = {**LAST_PRECIO_META, "desde_cache": True}
+        return _precios_cache
+
+    url_csv = os.getenv(
+        "PRECIOS_CSV_URL",
+        "https://docs.google.com/spreadsheets/d/1fmULPVz8YeKJT9jLyGRy6ZBOLpXz-wfgJSaF_Br5s28/export?format=csv",
+    )
+    P = _precios_base_offline()
+    fuente = "offline"
     try:
-        response = urllib.request.urlopen(url_csv)
-        reader = csv.reader(codecs.iterdecode(response, 'utf-8'))
-        next(reader, None) # Saltar cabecera
+        response = urllib.request.urlopen(url_csv, timeout=SHEETS_TIMEOUT_SEC)
+        reader = csv.reader(codecs.iterdecode(response, "utf-8"))
+        next(reader, None)
         for row in reader:
-            if len(row) >= 4: # Ahora verificamos ID y PRECIO en la col 4
-                try: 
-                    # El ID está en la col 0, el precio en la col 3 (índice 3 en python)
-                    P[row[0].strip()] = float(row[3].strip().replace('$', '').replace('.', '').replace(',', ''))
-                except: pass
-    except Exception as e: 
+            if len(row) >= 4:
+                try:
+                    P[row[0].strip()] = float(row[3].strip().replace("$", "").replace(".", "").replace(",", ""))
+                except Exception:
+                    pass
+        fuente = "google_sheets"
+    except Exception as e:
         print(f"Error leyendo Sheets (usando precios offline): {e}")
+
+    _precios_cache = P
+    _precios_cache_ts = now
+    LAST_PRECIO_META = {
+        "actualizado_en": datetime.now(timezone.utc).isoformat(),
+        "fuente": fuente,
+        "desde_cache": False,
+    }
     return P
+
+
+def _li(nom, val, origen):
+    return {"nom": nom, "val": val, "origen": origen}
 
 def extraer_numero_escala(img, mask_verde):
     # (El código de OCR queda igual, está perfecto)
@@ -170,12 +229,12 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
         mat_carpeta = (10.5 * precio_cem_kg) + (0.03 * P.get('mat_arena_m3',0))
         mat_ceramico = (1.05 * P.get('mat_ceramico_m2',0)) + (4 * precio_peg_kg)
 
-        res["items"].append({"nom": "Mano Obra: Muros", "val": m2_muros * P.get('mo_muro_hueco_m2', 0)})
-        res["items"].append({"nom": "Mano Obra: Revoques", "val": m2_revoques * P.get('mo_revoque_doble_m2',0)})
-        res["items"].append({"nom": "Mano Obra: Pisos", "val": m2_pisos * (P.get('mo_contrapiso_m2',0) + P.get('mo_carpeta_m2',0) + P.get('mo_ceramico_m2',0))})
-        res["items"].append({"nom": "Materiales: Muros", "val": m2_muros * mat_muro})
-        res["items"].append({"nom": "Materiales: Revoques", "val": m2_revoques * mat_revoque})
-        res["items"].append({"nom": "Materiales: Pisos", "val": m2_pisos * (mat_contrapiso + mat_carpeta + mat_ceramico)})
+        res["items"].append(_li("Mano Obra: Muros", m2_muros * P.get("mo_muro_hueco_m2", 0), "Mascara HSV rojo + thinning de muro; m lineales x escala; x 2,60 m; tabla mo_muro_hueco_m2."))
+        res["items"].append(_li("Mano Obra: Revoques", m2_revoques * P.get("mo_revoque_doble_m2", 0), "Misma superficie muro x2 (revoque doble); mo_revoque_doble_m2."))
+        res["items"].append(_li("Mano Obra: Pisos", m2_pisos * (P.get("mo_contrapiso_m2", 0) + P.get("mo_carpeta_m2", 0) + P.get("mo_ceramico_m2", 0)), "Mascaras gris y naranja (pisos) en m2 reales; suma MO contrapiso+carpeta+ceramico."))
+        res["items"].append(_li("Materiales: Muros", m2_muros * mat_muro, "Metros lineales muro x formulas de ladrillo/cemento segun sistema elegido."))
+        res["items"].append(_li("Materiales: Revoques", m2_revoques * mat_revoque, "Superficie revoque (2x muro) x dosificacion cemento/cal/arena."))
+        res["items"].append(_li("Materiales: Pisos", m2_pisos * (mat_contrapiso + mat_carpeta + mat_ceramico), "m2 piso detectados x paquete contrapiso+carpeta+ceramico."))
 
         img_audit[mask_gris > 0] = [255, 150, 200] 
         kernel = np.ones((15, 15), np.uint8)
@@ -210,16 +269,16 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
         tot_bocas = puntas_a + puntas_m
         tot_ml_agua = ml_azul + ml_magenta
 
-        if tot_ml_agua > 0: 
-            res["items"].append({"nom": f"Mat: Caño Termo ({tot_ml_agua:.1f}m)", "val": tot_ml_agua * P.get('AGUA-MAT-01', 0)})
-            res["items"].append({"nom": f"Mat: Codos ({tot_codos}u)", "val": tot_codos * P.get('AGUA-ACC-CODO', 0)})
-            res["items"].append({"nom": f"Mat: Tees ({tot_tees}u)", "val": tot_tees * P.get('AGUA-ACC-TE', 0)})
-            res["items"].append({"nom": f"M.O: Tender Cañería ({tot_ml_agua:.1f}m)", "val": tot_ml_agua * P.get('AGUA-MO-01', 0)})
-            res["items"].append({"nom": f"M.O: Armado Bocas ({tot_bocas}u)", "val": tot_bocas * P.get('AGUA-BOCA-01', 0)})
-        
-        if ml_marron > 0: 
-            res["items"].append({"nom": f"Mat: Caño Cloaca ({ml_marron:.1f}m)", "val": ml_marron * P.get('CLOA-MAT-01', 0)})
-            res["items"].append({"nom": f"M.O: Inst. Cloaca ({ml_marron:.1f}m)", "val": ml_marron * P.get('CLOA-MO-01', 0)})
+        if tot_ml_agua > 0:
+            res["items"].append(_li(f"Mat: Caño Termo ({tot_ml_agua:.1f}m)", tot_ml_agua * P.get("AGUA-MAT-01", 0), "Mascaras azul+magenta, thinning; metros lineales x AGUA-MAT-01."))
+            res["items"].append(_li(f"Mat: Codos ({tot_codos}u)", tot_codos * P.get("AGUA-ACC-CODO", 0), "Grafo sobre esqueleto agua fria/caliente; nodos tipo codo."))
+            res["items"].append(_li(f"Mat: Tees ({tot_tees}u)", tot_tees * P.get("AGUA-ACC-TE", 0), "Grafo sobre esqueleto; bifurcaciones (tees)."))
+            res["items"].append(_li(f"M.O: Tender Cañería ({tot_ml_agua:.1f}m)", tot_ml_agua * P.get("AGUA-MO-01", 0), "Metros totales agua x AGUA-MO-01."))
+            res["items"].append(_li(f"M.O: Armado Bocas ({tot_bocas}u)", tot_bocas * P.get("AGUA-BOCA-01", 0), "Puntas del esqueleto (bocas) agua fria+caliente."))
+
+        if ml_marron > 0:
+            res["items"].append(_li(f"Mat: Caño Cloaca ({ml_marron:.1f}m)", ml_marron * P.get("CLOA-MAT-01", 0), "Mascara sepia/naranja cloaca + thinning x CLOA-MAT-01."))
+            res["items"].append(_li(f"M.O: Inst. Cloaca ({ml_marron:.1f}m)", ml_marron * P.get("CLOA-MO-01", 0), "Metros lineales cloaca x CLOA-MO-01."))
         
         # La auditoría visual pintará Azul, Rosa Brillante y Naranja
         img_audit[mask_azul > 0] = [255, 0, 0]
@@ -250,11 +309,11 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
         ml_corrugado = np.sum(cv2.ximgproc.thinning(mask_amarilla) > 0) * escala
         
         if ml_corrugado > 0:
-            res["items"].append({"nom": f"Mat: Caño Corrugado ({ml_corrugado:.1f}m)", "val": ml_corrugado * P.get('LUZ-MAT-01', 0)})
-            res["items"].append({"nom": f"M.O: Tendido Eléctrico ({ml_corrugado:.1f}m)", "val": ml_corrugado * P.get('LUZ-MO-01', 0)})
+            res["items"].append(_li(f"Mat: Caño Corrugado ({ml_corrugado:.1f}m)", ml_corrugado * P.get("LUZ-MAT-01", 0), "Mascara amarilla electrica + thinning x LUZ-MAT-01."))
+            res["items"].append(_li(f"M.O: Tendido Eléctrico ({ml_corrugado:.1f}m)", ml_corrugado * P.get("LUZ-MO-01", 0), "Metros lineales tendido x LUZ-MO-01."))
         if cant_bocas > 0:
-            res["items"].append({"nom": f"Mat: Cajas y Llaves ({cant_bocas}u)", "val": cant_bocas * P.get('LUZ-MAT-02', 0)})
-            res["items"].append({"nom": f"M.O: Armado Bocas ({cant_bocas}u)", "val": cant_bocas * P.get('LUZ-MO-02', 0)})
+            res["items"].append(_li(f"Mat: Cajas y Llaves ({cant_bocas}u)", cant_bocas * P.get("LUZ-MAT-02", 0), "Apertura morfologica sobre amarillo; contornos gruesos (cajas)."))
+            res["items"].append(_li(f"M.O: Armado Bocas ({cant_bocas}u)", cant_bocas * P.get("LUZ-MO-02", 0), "Mismo conteo de cajas x LUZ-MO-02."))
 
     # ==========================================
     # 🏠 MÓDULO 4: TECHOS (Color Violeta Flúor)
@@ -271,11 +330,11 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
             ml_perfil = m2_techo * 2.5 # 2.5 metros de perfil C por cada m2
             unid_tornillos = m2_techo * 5 # 5 tornillos por cada m2
             
-            res["items"].append({"nom": f"Mat: Chapa Cincalum ({m2_techo:.1f}m2)", "val": m2_techo * P.get('TECH-CHAP-01', 0)})
-            res["items"].append({"nom": f"Mat: Aislante ({m2_techo:.1f}m2)", "val": m2_techo * P.get('TECH-AISL-01', 0)})
-            res["items"].append({"nom": f"Mat: Perfilería C ({ml_perfil:.1f}m)", "val": ml_perfil * P.get('TECH-PERF-01', 0)})
-            res["items"].append({"nom": f"Mat: Tornillos autoperf. ({unid_tornillos:.0f}u)", "val": unid_tornillos * P.get('TECH-TORN-01', 0)})
-            res["items"].append({"nom": f"M.O: Armado de Techo ({m2_techo:.1f}m2)", "val": m2_techo * P.get('TECH-MO-01', 0)})
+            res["items"].append(_li(f"Mat: Chapa Cincalum ({m2_techo:.1f}m2)", m2_techo * P.get("TECH-CHAP-01", 0), "Mascara violeta techo en m2 reales x TECH-CHAP-01."))
+            res["items"].append(_li(f"Mat: Aislante ({m2_techo:.1f}m2)", m2_techo * P.get("TECH-AISL-01", 0), "m2 techo x TECH-AISL-01."))
+            res["items"].append(_li(f"Mat: Perfilería C ({ml_perfil:.1f}m)", ml_perfil * P.get("TECH-PERF-01", 0), "2,5 m lineales de perfil C por m2 de techo."))
+            res["items"].append(_li(f"Mat: Tornillos autoperf. ({unid_tornillos:.0f}u)", unid_tornillos * P.get("TECH-TORN-01", 0), "5 unidades tornillo por m2 de techo."))
+            res["items"].append(_li(f"M.O: Armado de Techo ({m2_techo:.1f}m2)", m2_techo * P.get("TECH-MO-01", 0), "m2 techo x TECH-MO-01."))
             
             # Auditoría visual: pinta el techo detectado de un semitransparente naranja
             img_audit[mask_violeta > 0] = [0, 150, 255]
@@ -301,8 +360,8 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
                 area_m2 = cv2.contourArea(c_terreno) * escala_m2
                 perimetro_m = cv2.arcLength(c_terreno, True) * escala
                 
-                res["items"].append({"nom": f"🟩 LOTE {numero_lote} - Área", "val": f"{area_m2:.2f} m²"})
-                res["items"].append({"nom": f"📏 LOTE {numero_lote} - Perímetro", "val": f"{perimetro_m:.2f} m"})
+                res["items"].append(_li(f"🟩 LOTE {numero_lote} - Área", f"{area_m2:.2f} m²", "Contorno gris oscuro; area en px x escala_m2."))
+                res["items"].append(_li(f"📏 LOTE {numero_lote} - Perímetro", f"{perimetro_m:.2f} m", "Perimetro del contorno x escala lineal."))
                 
                 # Lados
                 epsilon = 0.02 * cv2.arcLength(c_terreno, True)
@@ -313,7 +372,7 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
                         pt1 = vertices[i][0]
                         pt2 = vertices[(i + 1) % len(vertices)][0]
                         dist_m = np.linalg.norm(pt1 - pt2) * escala
-                        res["items"].append({"nom": f"   ↳ Lado {i+1}", "val": f"{dist_m:.2f} m"})
+                        res["items"].append(_li(f"   ↳ Lado {i+1}", f"{dist_m:.2f} m", "approxPolyDP sobre contorno del lote; lado i."))
                 
                 # Auditoría: Pinta SOLO el lote actual, bordes y vértices
                 cv2.drawContours(img_audit, [c_terreno], -1, (255, 150, 0), -1) # Relleno Azul
@@ -335,11 +394,23 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
     
     _, buf = cv2.imencode('.png', img_audit)
     res["imagen"] = base64.b64encode(buf).decode('utf-8')
-    
+
+    avisos = []
+    if px_v == 0:
+        avisos.append("No se detecto traza verde de escala; se aplico escala por defecto en pixels (revisa linea verde).")
+    if escala_leida is None:
+        avisos.append("OCR no leyo un numero junto al verde; se uso la escala manual del formulario.")
+    if LAST_PRECIO_META.get("fuente") == "offline":
+        avisos.append("Precios en modo local (no se pudo actualizar desde el CSV publico en la ultima lectura).")
+
+    res["avisos"] = avisos
+    res["escala_modo"] = "ocr" if escala_leida is not None else ("manual" if px_v > 0 else "sin_linea")
+    res["precios_info"] = get_precios_info()
+
     # FIX DEL BUG 500: Solo suma plata si NO es un terreno
     if tipo_plano != "terreno":
-        res["total"] = sum(i["val"] for i in res["items"])
+        res["total"] = sum(float(i["val"]) for i in res["items"] if isinstance(i.get("val"), (int, float)))
     else:
         res["total"] = 0
-        
+
     return res
