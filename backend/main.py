@@ -744,6 +744,7 @@ async def calcular_en_obra(
 
     result_meta = {
         "escala_modo": resultados.get("escala_modo"),
+        "metros_referencia_usados": resultados.get("metros_referencia_usados"),
         "precios_info": resultados.get("precios_info"),
         "avisos": resultados.get("avisos") or [],
     }

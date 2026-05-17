@@ -105,6 +105,86 @@ const getErrorMessage = (err, fallback, authMode = null) => {
   return fallback;
 };
 
+const PALETA_GUIA = [
+  { id: 'terreno', nombre: 'Terreno / lote cerrado', muestras: ['#424242'], texto: 'Poligono del lote relleno en gris oscuro uniforme.' },
+  { id: 'escala', nombre: 'Escala automatica', muestras: ['#00ff5c'], texto: 'Linea verde fluor + numero en negro al lado (el motor lee el numero con OCR).' },
+  { id: 'muros', nombre: 'Muros y cerramientos', muestras: ['#d32f2f'], texto: 'Muros portantes y tabiques en rojo intenso (HSV rojo).' },
+  {
+    id: 'pisos',
+    nombre: 'Pisos (carpeta / ceramicos)',
+    muestras: ['#9e9e9e', '#ff9800'],
+    texto: 'Gris claro o naranja segun capa de piso o contrapiso.',
+  },
+  { id: 'aberturas', nombre: 'Aberturas', muestras: ['#00bcd4'], texto: 'Contorno o relleno cian para puertas y ventanas.' },
+  { id: 'agua_fria', nombre: 'Agua fria', muestras: ['#1e88e5'], texto: 'Trazos azules.' },
+  { id: 'agua_caliente', nombre: 'Agua caliente', muestras: ['#e040fb'], texto: 'Magenta o fucsia.' },
+  { id: 'cloacas', nombre: 'Cloacas / desagues', muestras: ['#795548'], texto: 'Marron / sepia / naranja apagado segun plano.' },
+  { id: 'luz', nombre: 'Electricidad', muestras: ['#ffeb3b'], texto: 'Amarillo para canalizaciones electricas.' },
+  { id: 'techo', nombre: 'Techos y losas', muestras: ['#b388ff'], texto: 'Violeta o fluor violeta para losas o cubiertas.' },
+];
+
+function ColorGuidePanel({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="color-guide-overlay" onClick={onClose} role="presentation">
+      <div
+        className="color-guide-sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guia-colores-titulo"
+      >
+        <header className="color-guide-head">
+          <div>
+            <span className="eyebrow">Referencia visual</span>
+            <h2 id="guia-colores-titulo">Colores que entiende el motor</h2>
+            <p className="color-guide-lead">
+              No hace falta un hex exacto: el motor busca rangos de color en la imagen. Estos tonos son los mas seguros para coincidir con la calibracion.
+            </p>
+          </div>
+          <button type="button" className="color-guide-close nav-btn" onClick={onClose}>
+            Cerrar
+          </button>
+        </header>
+        <ul className="color-guide-list">
+          {PALETA_GUIA.map((row) => (
+            <li key={row.id} className="color-guide-item">
+              <div className="color-guide-swatches" aria-hidden>
+                {row.muestras.map((hex) => (
+                  <span key={hex} className="color-swatch" style={{ backgroundColor: hex }} title={hex} />
+                ))}
+              </div>
+              <div className="color-guide-copy">
+                <strong>{row.nombre}</strong>
+                <span>{row.texto}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p className="color-guide-foot">
+          Plantilla editable:{' '}
+          <a className="link-inline" href="/plantilla-paleta-arq-ia.svg" download="plantilla-paleta-arq-ia.svg">
+            plantilla-paleta-arq-ia.svg
+          </a>
+          . Tecla <kbd>Esc</kbd> cierra esta ventana.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('arqia_token') || '');
   const [authMode, setAuthMode] = useState('login');
@@ -378,6 +458,7 @@ function App() {
       const id = `demo-${Date.now()}`;
       const meta = {
         escala_modo: data.escala_modo,
+        metros_referencia_usados: data.metros_referencia_usados,
         avisos: data.avisos || [],
         precios_info: data.precios_info || {},
       };
@@ -566,18 +647,20 @@ function App() {
   };
 
   const ScalePanel = ({ ultimo }) => {
-    const raw = ultimo?.escala_detectada;
-    const tieneIa = raw != null && raw !== '' && !Number.isNaN(Number(raw));
-    const iaText = tieneIa ? Number(raw).toFixed(2) : null;
     const modo = ultimo?.meta?.escala_modo;
-    const modoLabel =
-      modo === 'ocr'
-        ? 'OCR sobre linea verde'
-        : modo === 'manual'
-          ? 'Usando valor manual'
-          : modo === 'sin_linea'
-            ? 'Sin traza verde detectada'
-            : null;
+    const ocrRaw = ultimo?.escala_detectada;
+    const ocrNum = ocrRaw != null && ocrRaw !== '' && !Number.isNaN(Number(ocrRaw)) ? Number(ocrRaw) : null;
+    const aplicadoRaw = ultimo?.meta?.metros_referencia_usados ?? ultimo?.metros_referencia_usados;
+    let aplicadoNum =
+      aplicadoRaw != null && aplicadoRaw !== '' && !Number.isNaN(Number(aplicadoRaw)) ? Number(aplicadoRaw) : null;
+    if (aplicadoNum == null && ultimo && ocrNum != null) aplicadoNum = ocrNum;
+    if (aplicadoNum == null && ultimo && (modo === 'manual' || modo === 'sin_linea')) {
+      const r = Number(referencia);
+      if (!Number.isNaN(r) && r > 0) aplicadoNum = r;
+    }
+
+    const tieneDato = aplicadoNum != null && !Number.isNaN(aplicadoNum);
+    const valorTexto = tieneDato ? `${aplicadoNum.toFixed(2)} m` : '—';
 
     return (
       <div className="scale-panel">
@@ -599,13 +682,28 @@ function App() {
               />
               <span className="scale-suffix">m</span>
             </div>
-            <p className="scale-hint">Si el OCR no lee el numero junto al verde.</p>
+            <p className="scale-hint">Metros del segmento verde si el OCR no lee el numero.</p>
           </div>
-          <div className={`scale-field scale-readout${!tieneIa ? ' is-empty' : ''}`}>
-            <span className="scale-readout-label">Ultimo analisis</span>
-            <p className="scale-readout-value">{tieneIa ? `${iaText} m` : '—'}</p>
-            {modoLabel && <p className="scale-readout-meta">{modoLabel}</p>}
-            {!tieneIa && !modoLabel && <p className="scale-readout-meta">Procesa un plano para ver la lectura.</p>}
+          <div className={`scale-field scale-readout${!tieneDato ? ' is-empty' : ''}`}>
+            <span className="scale-readout-label">Escala aplicada al calculo</span>
+            <p className="scale-readout-value">{valorTexto}</p>
+            {!ultimo && <p className="scale-readout-meta">Procesa un plano para ver la escala usada en el calculo.</p>}
+            {ultimo && tieneDato && modo === 'ocr' && (
+              <p className="scale-readout-meta">
+                {ocrNum != null ? `Lectura OCR: ${ocrNum.toFixed(2)} m.` : 'Escala leida por OCR sobre la linea verde.'}
+              </p>
+            )}
+            {ultimo && tieneDato && modo === 'manual' && (
+              <p className="scale-readout-meta">OCR sin lectura; se uso el respaldo manual.</p>
+            )}
+            {ultimo && tieneDato && modo === 'sin_linea' && (
+              <p className="scale-readout-meta">Sin traza verde; se uso el respaldo manual.</p>
+            )}
+            {ultimo && tieneDato && ocrNum != null && aplicadoNum != null && Math.abs(ocrNum - aplicadoNum) >= 0.02 && (
+              <p className="scale-readout-meta">
+                OCR leyo {ocrNum.toFixed(2)} m; el calculo uso {aplicadoNum.toFixed(2)} m.
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -627,7 +725,9 @@ function App() {
             </div>
           </div>
           <div className="top-actions">
-            <button type="button" className="nav-btn" onClick={() => setMostrarGuia(!mostrarGuia)}>Guia de colores</button>
+            <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
+              {mostrarGuia ? 'Cerrar guia' : 'Guia de colores'}
+            </button>
             <button
               type="button"
               className="nav-btn"
@@ -646,11 +746,7 @@ function App() {
         </header>
         <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando con la API...'}</div>
 
-        {mostrarGuia && (
-          <section className="guide-band">
-            <strong>Referencia rapida:</strong> Terrenos gris oscuro; Escala: linea verde fluor + medida en negro; Muros rojo; Pisos gris u naranja; Aberturas cian; Sanitario: azul (fria), magenta (caliente), sepia (cloaca); Electrico amarillo; Techos violeta fluor.
-          </section>
-        )}
+        {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
 
         <main className="workspace demo-workspace">
           <aside className="sidebar demo-sidebar">
@@ -672,7 +768,7 @@ function App() {
                 </li>
                 <li className={demoColoresOk ? 'done' : ''}>
                   <span className="step-title">Revisa colores y escala en el plano</span>
-                  <small>Linea verde fluor + numero legible (OCR). Si falla, usa escala manual abajo.</small>
+                  <small>Usá el boton Guia de colores arriba para ver cada tono. Linea verde + numero para OCR.</small>
                   {!demoColoresOk && (
                     <button type="button" className="nav-btn step-ack" onClick={marcarDemoColoresOk}>
                       Entendido
@@ -681,7 +777,7 @@ function App() {
                 </li>
                 <li className={demoRuns.length > 0 ? 'done' : ''}>
                   <span className="step-title">Subi un PNG, JPG o WebP</span>
-                  <small>Elegi un modulo y cargá tu plano. El resultado aparece al lado (no se guarda en servidor).</small>
+                  <small>Elegi un modulo y cargá tu plano. El resultado aparece abajo (no se guarda en servidor).</small>
                 </li>
                 <li>
                   <span className="step-title">Guardar obra y CSV</span>
@@ -693,17 +789,12 @@ function App() {
             </div>
           </aside>
 
-          <section className="main-panel">
-            <div className="panel-header panel-header--split">
-              <div>
-                <span className="eyebrow">Panel de computo</span>
-                <h2>Modo demostracion</h2>
-                <p>Los analisis se muestran solo en este navegador. La API usa el mismo motor que en produccion, sin persistencia.</p>
-              </div>
-              <div className="panel-actions panel-actions--scale">
-                <ScalePanel ultimo={demoUltimo} />
-              </div>
-            </div>
+          <section className="main-panel demo-main">
+            <header className="demo-panel-intro">
+              <span className="eyebrow">Panel de computo</span>
+              <h2>Modo demostracion</h2>
+              <p>Los analisis se muestran solo en este navegador. La API usa el mismo motor que en produccion, sin persistencia.</p>
+            </header>
 
             {error && <div className="error-box">{error}</div>}
 
@@ -722,8 +813,12 @@ function App() {
               </div>
             </div>
 
+            <div className="demo-calibration-card">
+              <ScalePanel ultimo={demoUltimo} />
+            </div>
+
             <div className="sample-actions">
-              <span className="eyebrow">Cero archivos</span>
+              <span className="eyebrow">Plano de muestra</span>
               <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', true)}>
                 {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
               </button>
@@ -919,7 +1014,9 @@ function App() {
           <a className="nav-btn" href="/plantilla-paleta-arq-ia.svg" download="plantilla-paleta-arq-ia.svg">
             Paleta SVG
           </a>
-          <button className="nav-btn" onClick={() => setMostrarGuia(!mostrarGuia)}>Guia</button>
+          <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
+            {mostrarGuia ? 'Cerrar guia' : 'Guia'}
+          </button>
           <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
             Suscripcion
           </button>
@@ -933,11 +1030,7 @@ function App() {
       </header>
       <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
 
-      {mostrarGuia && (
-        <section className="guide-band">
-          <strong>Guia de Calibracion Rapida:</strong> Terrenos/Lotes gris oscuro; Escala automatica: linea verde fluor + medida en negro; Muros: paredes rojo y pisos gris o naranja; Sanitario: azul (agua fria), magenta/fucsia (agua caliente), naranja/sepia (cloacas); Electrico: amarillo.
-        </section>
-      )}
+      {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
 
       <main className="workspace">
         <aside className="sidebar">

@@ -405,6 +405,7 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
 
     res["avisos"] = avisos
     res["escala_modo"] = "ocr" if escala_leida is not None else ("manual" if px_v > 0 else "sin_linea")
+    res["metros_referencia_usados"] = float(metros_reales)
     res["precios_info"] = get_precios_info()
 
     # FIX DEL BUG 500: Solo suma plata si NO es un terreno
