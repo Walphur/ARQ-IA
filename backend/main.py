@@ -3,9 +3,11 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
+import threading
 import time
 from io import BytesIO, StringIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import stripe
@@ -20,7 +22,7 @@ from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
-from fpdf import FPDF
+from presupuesto_pdf import build_project_pdf_bytes
 
 
 def normalize_database_url(url: str) -> str:
@@ -40,6 +42,8 @@ STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
 APP_VERSION = os.getenv("APP_VERSION", "dev")
+DEMO_RATE_WINDOW_SEC = int(os.getenv("DEMO_RATE_WINDOW_SEC", "3600"))
+DEMO_RATE_MAX = int(os.getenv("DEMO_RATE_MAX", "30"))
 
 
 if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
@@ -76,6 +80,36 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 
+_demo_rate_lock = threading.Lock()
+_demo_rate_hits: dict[str, list[float]] = {}
+
+
+def client_ip(request: Request) -> str:
+    xf = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xf:
+        return xf
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def check_demo_rate_limit(request: Request):
+    if DEMO_RATE_MAX <= 0:
+        return
+    ip = client_ip(request)
+    now = time.time()
+    with _demo_rate_lock:
+        hits = _demo_rate_hits.setdefault(ip, [])
+        cutoff = now - DEMO_RATE_WINDOW_SEC
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= DEMO_RATE_MAX:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Demasiados analisis en modo demo desde esta IP. Limite: {DEMO_RATE_MAX} cada {DEMO_RATE_WINDOW_SEC // 60} minutos. Probá mas tarde o crea un estudio.",
+            )
+        hits.append(now)
+
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
@@ -93,6 +127,7 @@ class Studio(Base):
 
     users = relationship("User", back_populates="studio")
     projects = relationship("Project", back_populates="studio")
+    invites = relationship("StudioInvite", back_populates="studio")
 
 
 class User(Base):
@@ -146,6 +181,21 @@ class Process(Base):
     user = relationship("User", back_populates="processes")
 
 
+class StudioInvite(Base):
+    __tablename__ = "studio_invites"
+
+    id = Column(Integer, primary_key=True)
+    studio_id = Column(Integer, ForeignKey("studios.id"), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    role = Column(String(40), nullable=False)
+    token_hash = Column(String(80), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    studio = relationship("Studio", back_populates="invites")
+
+
 class RegisterIn(BaseModel):
     studio_name: str
     name: str
@@ -166,6 +216,17 @@ class ProjectIn(BaseModel):
 
 class BillingPortalIn(BaseModel):
     return_url: str | None = None
+
+
+class InviteCreateIn(BaseModel):
+    email: EmailStr
+    role: str = "editor"
+
+
+class RegisterInviteIn(BaseModel):
+    token: str
+    name: str
+    password: str
 
 
 def get_db():
@@ -247,6 +308,12 @@ def current_user(
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+    return user
+
+
+def require_studio_owner(user: User) -> User:
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Solo el dueño del estudio puede gestionar invitaciones.")
     return user
 
 
@@ -369,6 +436,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "can_manage_invites": user.role == "owner",
         "studio": {
             "id": user.studio.id,
             "name": user.studio.name,
@@ -474,6 +542,152 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
     )
 
 
+@app.get("/projects/{project_id}/export.pdf")
+@app.get("/api/projects/{project_id}/export.pdf")
+def export_project_pdf(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+    processes = (
+        db.query(Process)
+        .filter(Process.project_id == project.id)
+        .order_by(Process.created_at.asc())
+        .all()
+    )
+    pdf_bytes = build_project_pdf_bytes(project, processes)
+    filename = f"arq-ia-obra-{project.id}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/studio/invitations")
+@app.get("/api/studio/invitations")
+def list_studio_invitations(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_studio_owner(user)
+    rows = (
+        db.query(StudioInvite)
+        .filter(StudioInvite.studio_id == user.studio_id)
+        .order_by(StudioInvite.created_at.desc())
+        .limit(80)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "email": r.email,
+            "role": r.role,
+            "created_at": r.created_at.isoformat(),
+            "expires_at": r.expires_at.isoformat(),
+            "accepted": r.accepted_at is not None,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/studio/invitations")
+@app.post("/api/studio/invitations")
+def create_studio_invitation(data: InviteCreateIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_studio_owner(user)
+    role = (data.role or "editor").strip().lower()
+    if role not in ("editor", "viewer"):
+        raise HTTPException(status_code=400, detail='Rol invalido. Usa "editor" o "viewer".')
+    email = data.email.lower().strip()
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=400, detail="Ese email ya tiene cuenta. Inicia sesion; no hace falta invitacion.")
+    now = datetime.now(timezone.utc)
+    pending = (
+        db.query(StudioInvite)
+        .filter(
+            StudioInvite.studio_id == user.studio_id,
+            StudioInvite.email == email,
+            StudioInvite.accepted_at.is_(None),
+            StudioInvite.expires_at > now,
+        )
+        .first()
+    )
+    if pending:
+        raise HTTPException(status_code=400, detail="Ya existe una invitacion pendiente para ese email.")
+    raw = secrets.token_urlsafe(24)
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    inv = StudioInvite(
+        studio_id=user.studio_id,
+        email=email,
+        role=role,
+        token_hash=token_hash,
+        expires_at=now + timedelta(days=7),
+    )
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    base = APP_URL.rstrip("/")
+    invite_url = f"{base}/?invite={raw}"
+    return {
+        "id": inv.id,
+        "email": email,
+        "role": role,
+        "expires_at": inv.expires_at.isoformat(),
+        "invite_url": invite_url,
+    }
+
+
+@app.delete("/studio/invitations/{invite_id}")
+@app.delete("/api/studio/invitations/{invite_id}")
+def delete_studio_invitation(invite_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_studio_owner(user)
+    inv = db.get(StudioInvite, invite_id)
+    if not inv or inv.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Invitacion no encontrada.")
+    if inv.accepted_at:
+        raise HTTPException(status_code=400, detail="Esta invitacion ya fue aceptada.")
+    db.delete(inv)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/invites/verify")
+@app.get("/api/invites/verify")
+def verify_invitation(token: str, db: Session = Depends(get_db)):
+    token_hash = hashlib.sha256(token.strip().encode()).hexdigest()
+    inv = db.query(StudioInvite).filter(StudioInvite.token_hash == token_hash).first()
+    now = datetime.now(timezone.utc)
+    if not inv or inv.accepted_at or inv.expires_at < now:
+        raise HTTPException(status_code=404, detail="Invitacion invalida o vencida.")
+    studio = db.get(Studio, inv.studio_id)
+    return {"studio_name": studio.name if studio else "", "email": inv.email, "role": inv.role}
+
+
+@app.post("/auth/register-invite")
+@app.post("/api/auth/register-invite")
+def register_with_invitation(data: RegisterInviteIn, db: Session = Depends(get_db)):
+    if len(data.password) < 8:
+        raise HTTPException(status_code=400, detail="La clave debe tener al menos 8 caracteres.")
+    if not data.name.strip():
+        raise HTTPException(status_code=400, detail="Ingresa tu nombre.")
+    token_hash = hashlib.sha256(data.token.strip().encode()).hexdigest()
+    inv = db.query(StudioInvite).filter(StudioInvite.token_hash == token_hash).first()
+    now = datetime.now(timezone.utc)
+    if not inv or inv.accepted_at or inv.expires_at < now:
+        raise HTTPException(status_code=400, detail="Invitacion invalida o vencida.")
+    email = inv.email.lower().strip()
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=400, detail="Ese email ya tiene cuenta. Inicia sesion.")
+    user = User(
+        studio_id=inv.studio_id,
+        name=data.name.strip(),
+        email=email,
+        password_hash=hash_password(data.password),
+        role=inv.role,
+    )
+    db.add(user)
+    inv.accepted_at = now
+    db.commit()
+    db.refresh(user)
+    return {"token": create_token(user.id), "user": {"name": user.name, "email": user.email}}
+
+
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     project = db.get(Project, project_id)
@@ -555,6 +769,7 @@ async def calcular_en_obra(
 @app.post("/calcular")
 @app.post("/api/calcular")
 async def calcular_demo(
+    request: Request,
     file: UploadFile = File(...),
     referencia_metros: float = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
@@ -562,6 +777,7 @@ async def calcular_demo(
 ):
     contenido = await file.read()
     validate_upload(file, contenido)
+    check_demo_rate_limit(request)
     try:
         return procesar_plano_ia(contenido, referencia_metros, sistema_muro, tipo_plano)
     except ValueError as exc:

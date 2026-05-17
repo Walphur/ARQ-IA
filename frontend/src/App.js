@@ -71,9 +71,21 @@ const postDemoCalcular = async (formData) => {
   }
 };
 
+const getPublicWithFallback = async (pathWithQuery) => {
+  try {
+    return await axios.get(`${API_URL}${pathWithQuery}`);
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      return axios.get(`${API_URL}/api${pathWithQuery}`);
+    }
+    throw err;
+  }
+};
+
 const getErrorMessage = (err, fallback, authMode = null) => {
   const status = err?.response?.status;
   const detail = String(err?.response?.data?.detail || '').trim();
+  if (status === 429 && detail) return detail;
   if (status === 413 && detail) return detail;
   if (status === 413) return 'El archivo es demasiado grande. Comprimí la imagen o subi menor resolucion.';
   if (status === 400 && detail) return detail;
@@ -116,6 +128,11 @@ function App() {
   );
   const [exportasteCsv, setExportasteCsv] = useState(false);
   const [preciosInfo, setPreciosInfo] = useState(null);
+  const [inviteInfo, setInviteInfo] = useState(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [invitations, setInvitations] = useState([]);
+  const [inviteForm, setInviteForm] = useState({ email: '', role: 'editor' });
+  const [lastInviteUrl, setLastInviteUrl] = useState('');
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: API_URL });
@@ -168,6 +185,59 @@ function App() {
   }, [token]);
 
   useEffect(() => {
+    if (token) {
+      setInviteInfo(null);
+      setInviteLoading(false);
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('invite');
+    if (!raw) {
+      setInviteInfo(null);
+      setInviteLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setInviteLoading(true);
+    setError('');
+    (async () => {
+      try {
+        const r = await getPublicWithFallback(`/invites/verify?token=${encodeURIComponent(raw)}`);
+        if (!cancelled) {
+          setInviteInfo({
+            token: raw,
+            email: r.data.email,
+            studioName: r.data.studio_name || 'el estudio',
+            role: r.data.role,
+          });
+          setAuthForm((f) => ({ ...f, email: r.data.email, name: '', password: '' }));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setInviteInfo(null);
+          setError(getErrorMessage(err, 'Invitacion invalida o vencida.'));
+        }
+      } finally {
+        if (!cancelled) setInviteLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || !me?.can_manage_invites) {
+      setInvitations([]);
+      return;
+    }
+    api
+      .get('/studio/invitations')
+      .then((res) => setInvitations(res.data))
+      .catch(() => setInvitations([]));
+  }, [token, me?.can_manage_invites, api]);
+
+  useEffect(() => {
     if (!token) return;
     Promise.all([refreshMe(), refreshProjects()]).catch(() => {
       localStorage.removeItem('arqia_token');
@@ -189,6 +259,48 @@ function App() {
     setExportasteCsv(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId]);
+
+  const salirDeFlujoInvitacion = () => {
+    setInviteInfo(null);
+    setInviteLoading(false);
+    setError('');
+    const u = new URL(window.location.href);
+    u.searchParams.delete('invite');
+    const qs = u.searchParams.toString();
+    window.history.replaceState({}, '', `${u.pathname}${qs ? `?${qs}` : ''}`);
+    setAuthMode('login');
+  };
+
+  const submitInviteRegister = async (event) => {
+    event.preventDefault();
+    if (!inviteInfo) return;
+    if (!authForm.name.trim()) {
+      setError('Ingresa tu nombre.');
+      return;
+    }
+    setLoading('auth');
+    setError('');
+    try {
+      const res = await postAuthWithFallback('/auth/register-invite', {
+        token: inviteInfo.token,
+        name: authForm.name.trim(),
+        password: authForm.password,
+      });
+      const u = new URL(window.location.href);
+      u.searchParams.delete('invite');
+      const qs = u.searchParams.toString();
+      window.history.replaceState({}, '', `${u.pathname}${qs ? `?${qs}` : ''}`);
+      setInviteInfo(null);
+      localStorage.setItem('arqia_token', res.data.token);
+      setDemoMode(false);
+      setDemoRuns([]);
+      setToken(res.data.token);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo completar el registro con la invitacion.'));
+    } finally {
+      setLoading('');
+    }
+  };
 
   const submitAuth = async (event) => {
     event.preventDefault();
@@ -362,6 +474,64 @@ function App() {
       setExportasteCsv(true);
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo exportar la obra.'));
+    }
+  };
+
+  const exportarPdf = async () => {
+    if (!activeProjectId) return;
+    setError('');
+    try {
+      const res = await api.get(`/projects/${activeProjectId}/export.pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `arq-ia-obra-${activeProjectId}.pdf`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo exportar el PDF.'));
+    }
+  };
+
+  const crearInvitacion = async (event) => {
+    event.preventDefault();
+    if (!inviteForm.email.trim()) return;
+    setLoading('invite');
+    setError('');
+    try {
+      const res = await api.post('/studio/invitations', {
+        email: inviteForm.email.trim(),
+        role: inviteForm.role,
+      });
+      setLastInviteUrl(res.data.invite_url || '');
+      setInviteForm({ email: '', role: 'editor' });
+      const list = await api.get('/studio/invitations');
+      setInvitations(list.data);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo crear la invitacion.'));
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const revocarInvitacion = async (inviteId) => {
+    if (!window.confirm('Revocar esta invitacion?')) return;
+    setError('');
+    try {
+      await api.delete(`/studio/invitations/${inviteId}`);
+      const list = await api.get('/studio/invitations');
+      setInvitations(list.data);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo revocar la invitacion.'));
+    }
+  };
+
+  const copiarTexto = async (texto) => {
+    try {
+      await navigator.clipboard.writeText(texto);
+      setError('');
+    } catch {
+      setError('No se pudo copiar al portapapeles.');
     }
   };
 
@@ -647,6 +817,35 @@ function App() {
         </div>
 
         <div className="auth-right-column">
+        {inviteLoading && (
+          <div className="auth-card">
+            <span className="eyebrow">Invitacion</span>
+            <h2>Verificando enlace...</h2>
+            <p className="auth-help">Un momento mientras validamos la invitacion.</p>
+          </div>
+        )}
+        {!inviteLoading && inviteInfo && (
+          <form className="auth-card" onSubmit={submitInviteRegister}>
+            <div>
+              <span className="eyebrow">Invitacion al estudio</span>
+              <h2>Unite a {inviteInfo.studioName}</h2>
+              <p className="auth-help">
+                Vas a ingresar como <strong>{inviteInfo.email}</strong>
+                {inviteInfo.role === 'viewer' ? ' (solo lectura)' : ' (editor)'}.
+              </p>
+            </div>
+            <input placeholder="Tu nombre" value={authForm.name} onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })} />
+            <input type="password" placeholder="Elegi una clave (min. 8 caracteres)" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} />
+            {error && <div className="error-box">{error}</div>}
+            <button className="primary-btn" disabled={loading === 'auth'}>
+              {loading === 'auth' ? 'Creando cuenta...' : 'Aceptar invitacion'}
+            </button>
+            <button type="button" className="ghost-btn" disabled={loading === 'auth'} onClick={salirDeFlujoInvitacion}>
+              Cancelar y usar otra cuenta
+            </button>
+          </form>
+        )}
+        {!inviteLoading && !inviteInfo && (
         <form className="auth-card" onSubmit={submitAuth}>
           <div>
             <span className="eyebrow">Acceso privado</span>
@@ -689,6 +888,7 @@ function App() {
           </button>
           <small className="auth-help">En modo prueba podes subir planos con el motor real; no se guardan en tu estudio.</small>
         </form>
+        )}
         <div className="precios-bar auth-precios">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
         </div>
       </div>
@@ -767,9 +967,61 @@ function App() {
           <div className="onboarding-card equipo-card">
             <span className="eyebrow">Equipo</span>
             <h2>Invitaciones</h2>
-            <p className="onboarding-lead">
-              Proximamente vas a poder invitar por email a colegas del estudio con rol editor o solo lectura, sin compartir la misma clave.
-            </p>
+            {me?.can_manage_invites ? (
+              <>
+                <p className="onboarding-lead">
+                  Invita por email con rol editor o solo lectura. La persona abre el enlace, elige clave y entra a este estudio.
+                </p>
+                <form className="invite-form" onSubmit={crearInvitacion}>
+                  <input
+                    type="email"
+                    placeholder="Email del colega"
+                    value={inviteForm.email}
+                    onChange={(e) => setInviteForm({ ...inviteForm, email: e.target.value })}
+                  />
+                  <select value={inviteForm.role} onChange={(e) => setInviteForm({ ...inviteForm, role: e.target.value })}>
+                    <option value="editor">Editor</option>
+                    <option value="viewer">Solo lectura</option>
+                  </select>
+                  <button type="submit" className="primary-btn" disabled={loading === 'invite'}>
+                    {loading === 'invite' ? 'Creando...' : 'Crear invitacion'}
+                  </button>
+                </form>
+                {lastInviteUrl && (
+                  <div className="invite-url-box">
+                    <p className="auth-help">Enlace (copialo y envialo por el canal que uses):</p>
+                    <code className="invite-url-code">{lastInviteUrl}</code>
+                    <button type="button" className="nav-btn" onClick={() => copiarTexto(lastInviteUrl)}>
+                      Copiar enlace
+                    </button>
+                  </div>
+                )}
+                <ul className="invite-list">
+                  {invitations.map((inv) => (
+                    <li key={inv.id} className="invite-list-item">
+                      <div>
+                        <strong>{inv.email}</strong>
+                        <small>
+                          {' '}
+                          · {inv.role === 'viewer' ? 'Solo lectura' : 'Editor'}
+                          {inv.accepted ? ' · aceptada' : ' · pendiente'}
+                        </small>
+                      </div>
+                      {!inv.accepted && (
+                        <button type="button" className="nav-btn" onClick={() => revocarInvitacion(inv.id)}>
+                          Revocar
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {invitations.length === 0 && <p className="empty-text">Todavia no hay invitaciones.</p>}
+              </>
+            ) : (
+              <p className="onboarding-lead">
+                Solo el dueño del estudio puede enviar invitaciones. Tu rol actual: <strong>{me?.role || '—'}</strong>.
+              </p>
+            )}
           </div>
         </aside>
 
@@ -785,6 +1037,9 @@ function App() {
                 <div className="panel-toolbar">
                   <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>
                     Exportar CSV
+                  </button>
+                  <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>
+                    Exportar PDF
                   </button>
                   <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
                     Eliminar obra
