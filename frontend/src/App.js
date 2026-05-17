@@ -13,7 +13,7 @@ const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
 const API_URL = (ENV_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
 
 /** Subir al cambiar la imagen de muestra en public/ (invalida cache CDN). */
-const PLANO_MUESTRA_VER = '5';
+const PLANO_MUESTRA_VER = '6';
 
 const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARC-IA').trim();
 const SUPPORT_WA_DIGITS = (process.env.REACT_APP_SUPPORT_WHATSAPP || '').replace(/\D/g, '');
@@ -47,6 +47,15 @@ const modulos = [
   { tipo: 'techo', titulo: 'Techos y losas', icono: 'T' },
   { tipo: 'terreno', titulo: 'Medicion de terrenos y lotes', icono: 'L' },
 ];
+
+/** PNG en public/: planos de referencia usados para calibrar el motor. */
+const MUESTRA_ASSET = {
+  muros: 'plano-muestra-muros',
+  agua: 'plano-muestra-agua',
+  luz: 'plano-muestra-luz',
+  techo: 'plano-muestra-techo',
+  terreno: 'plano-muestra-terreno',
+};
 
 const formatoMoneda = (valor) =>
   new Intl.NumberFormat('es-AR', {
@@ -498,15 +507,16 @@ function App() {
 
   const cargarPlanoMuestra = async (tipo, enDemo) => {
     setError('');
+    const assetBase = MUESTRA_ASSET[tipo] || MUESTRA_ASSET.muros;
     try {
-      const r = await fetch(`${window.location.origin}/plano-muestra.png?v=${PLANO_MUESTRA_VER}`, { cache: 'no-store' });
+      const r = await fetch(`${window.location.origin}/${assetBase}.png?v=${PLANO_MUESTRA_VER}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('missing');
       const blob = await r.blob();
-      const f = new File([blob], 'plano-muestra.png', { type: 'image/png' });
+      const f = new File([blob], `${assetBase}.png`, { type: 'image/png' });
       if (enDemo) await subirPlanoDemo(f, tipo);
       else await subirPlano(f, tipo);
     } catch (err) {
-      setError('No se encontro plano-muestra.png en el sitio. Volvé a desplegar el frontend con el archivo en public/.');
+      setError('No se encontro el plano de ejemplo en el sitio. Volvé a desplegar el frontend con los PNG en public/.');
     }
   };
 
@@ -860,20 +870,20 @@ function App() {
             </div>
 
             <div className="sample-actions">
-              <span className="eyebrow">Plano de muestra</span>
+              <span className="eyebrow">Planos de referencia</span>
               <p className="sample-preview-caption">
-                Mini plano de referencia (no es una obra real). Verde = escala, negro = metros, rojo = muros, gris = piso.
+                Son los PNG con los que calibramos el motor (muros, agua, luz, techo, terreno). Vista previa del de muros:
               </p>
               <img
                 className="sample-thumb"
-                src={`${window.location.origin}/plano-muestra.png?v=${PLANO_MUESTRA_VER}`}
-                alt="Vista previa del plano de muestra ARC-IA"
+                src={`${window.location.origin}/plano-muestra-muros.png?v=${PLANO_MUESTRA_VER}`}
+                alt="Vista previa plano de referencia muros"
               />
               <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', true)}>
-                {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
+                {loading === 'muros' ? 'Procesando muestra...' : 'Probar ejemplo: muros'}
               </button>
               <small className="auth-help">
-                Si el total no cambia, forzá recarga del sitio (Ctrl+F5): a veces el CDN sirve una imagen vieja en cache.
+                En cada modulo abajo tenes el mismo plano de ejemplo acorde al tipo (M, A, E, T, L). Si ves una imagen vieja, Ctrl+F5.
               </small>
             </div>
 
@@ -891,6 +901,14 @@ function App() {
                     <input disabled={loading === modulo.tipo} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => subirPlanoDemo(e.target.files[0], modulo.tipo)} />
                     {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
                   </label>
+                  <button
+                    type="button"
+                    className="nav-btn sample-modulo-btn"
+                    disabled={loading === modulo.tipo}
+                    onClick={() => cargarPlanoMuestra(modulo.tipo, true)}
+                  >
+                    Plano ejemplo ({modulo.icono})
+                  </button>
                 </div>
               ))}
             </div>
@@ -1288,17 +1306,37 @@ function App() {
                   <input disabled={!activeProjectId || loading === modulo.tipo} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => subirPlano(e.target.files[0], modulo.tipo)} />
                   {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
                 </label>
+                <button
+                  type="button"
+                  className="nav-btn sample-modulo-btn"
+                  disabled={!activeProjectId || loading === modulo.tipo}
+                  onClick={() => cargarPlanoMuestra(modulo.tipo, false)}
+                >
+                  Plano ejemplo ({modulo.icono})
+                </button>
               </div>
             ))}
           </div>
 
           {activeProjectId && (
             <div className="sample-actions">
-              <span className="eyebrow">Demo rapida</span>
-              <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', false)}>
-                {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
-              </button>
-              <small className="auth-help">Mismo PNG de demostracion; se guarda como un analisis mas en esta obra.</small>
+              <span className="eyebrow">Planos de referencia</span>
+              <p className="sample-preview-caption">Los mismos PNG de calibracion que en la demo; se guardan como analisis en esta obra.</p>
+              <div className="sample-multi-actions">
+                {modulos.map((m) => (
+                  <button
+                    key={m.tipo}
+                    type="button"
+                    className="nav-btn sample-chip"
+                    title={m.titulo}
+                    disabled={loading === m.tipo}
+                    onClick={() => cargarPlanoMuestra(m.tipo, false)}
+                  >
+                    {loading === m.tipo ? '...' : m.icono}
+                  </button>
+                ))}
+              </div>
+              <small className="auth-help">M = muros · A = agua · E = electricidad · T = techo · L = terreno</small>
             </div>
           )}
 

@@ -153,6 +153,26 @@ button {
   background: #0d0f12;
 }
 
+.sample-modulo-btn {
+  margin-top: 8px;
+  font-size: 0.76rem;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.sample-multi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sample-chip {
+  min-width: 44px;
+  font-weight: 800;
+  padding: 10px 12px;
+}
+
 .meta-avisos {
   margin: 0 0 12px;
   padding: 12px 14px;
