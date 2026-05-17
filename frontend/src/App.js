@@ -12,6 +12,9 @@ const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
 // api.{dominio} solo cuando no hay variable de entorno (subdominio propio).
 const API_URL = (ENV_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
 
+/** Subir al cambiar la imagen de muestra en public/ (invalida cache CDN). */
+const PLANO_MUESTRA_VER = '5';
+
 const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARC-IA').trim();
 const SUPPORT_WA_DIGITS = (process.env.REACT_APP_SUPPORT_WHATSAPP || '').replace(/\D/g, '');
 const SUPPORT_WA_HREF = SUPPORT_WA_DIGITS ? `https://wa.me/${SUPPORT_WA_DIGITS}` : null;
@@ -496,7 +499,7 @@ function App() {
   const cargarPlanoMuestra = async (tipo, enDemo) => {
     setError('');
     try {
-      const r = await fetch(`${window.location.origin}/plano-muestra.png`);
+      const r = await fetch(`${window.location.origin}/plano-muestra.png?v=${PLANO_MUESTRA_VER}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('missing');
       const blob = await r.blob();
       const f = new File([blob], 'plano-muestra.png', { type: 'image/png' });
@@ -673,7 +676,7 @@ function App() {
     let aplicadoNum =
       aplicadoRaw != null && aplicadoRaw !== '' && !Number.isNaN(Number(aplicadoRaw)) ? Number(aplicadoRaw) : null;
     if (aplicadoNum == null && ultimo && ocrNum != null) aplicadoNum = ocrNum;
-    if (aplicadoNum == null && ultimo && (modo === 'manual' || modo === 'sin_linea')) {
+    if (aplicadoNum == null && ultimo) {
       const r = Number(referencia);
       if (!Number.isNaN(r) && r > 0) aplicadoNum = r;
     }
@@ -858,11 +861,19 @@ function App() {
 
             <div className="sample-actions">
               <span className="eyebrow">Plano de muestra</span>
+              <p className="sample-preview-caption">
+                Mini plano de referencia (no es una obra real). Verde = escala, negro = metros, rojo = muros, gris = piso.
+              </p>
+              <img
+                className="sample-thumb"
+                src={`${window.location.origin}/plano-muestra.png?v=${PLANO_MUESTRA_VER}`}
+                alt="Vista previa del plano de muestra ARC-IA"
+              />
               <button type="button" className="nav-btn" disabled={loading === 'muros'} onClick={() => cargarPlanoMuestra('muros', true)}>
                 {loading === 'muros' ? 'Procesando muestra...' : 'Probar plano de muestra (Muros)'}
               </button>
               <small className="auth-help">
-                PNG de ejemplo (fondo oscuro): linea verde, cota 7,30 m en blanco, muros rojos. Deberia leerse por OCR como en tu plano.
+                Si el total no cambia, forzá recarga del sitio (Ctrl+F5): a veces el CDN sirve una imagen vieja en cache.
               </small>
             </div>
 

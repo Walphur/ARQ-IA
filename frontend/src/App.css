@@ -136,6 +136,23 @@ button {
   background: rgba(212, 175, 55, 0.04);
 }
 
+.sample-preview-caption {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: #c8c2b6;
+}
+
+.sample-thumb {
+  width: 100%;
+  max-width: 420px;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid #2b3037;
+  background: #0d0f12;
+}
+
 .meta-avisos {
   margin: 0 0 12px;
   padding: 12px 14px;
