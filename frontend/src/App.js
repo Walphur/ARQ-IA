@@ -3,10 +3,14 @@ import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.png';
 
-const DEFAULT_API_URL = window.location.hostname === 'localhost' ? 'http://localhost:8000' : `https://api.${window.location.hostname.replace(/^www\./, '')}`;
+const DEFAULT_API_URL =
+  window.location.hostname === 'localhost'
+    ? 'http://localhost:8000'
+    : `https://api.${window.location.hostname.replace(/^www\./, '')}`;
 const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
-const useDefaultApi = window.location.hostname !== 'localhost' && ENV_API_URL.includes('.onrender.com');
-const API_URL = ((useDefaultApi ? DEFAULT_API_URL : (ENV_API_URL || DEFAULT_API_URL))).replace(/\/+$/, '');
+// Siempre usar la URL configurada en build (p. ej. backend en Render). Forzar
+// api.{dominio} solo cuando no hay variable de entorno (subdominio propio).
+const API_URL = (ENV_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
 
 const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARC-IA').trim();
 const SUPPORT_WA_DIGITS = (process.env.REACT_APP_SUPPORT_WHATSAPP || '').replace(/\D/g, '');
@@ -239,7 +243,9 @@ function App() {
 
   useEffect(() => {
     if (!token) return;
-    Promise.all([refreshMe(), refreshProjects()]).catch(() => {
+    Promise.all([refreshMe(), refreshProjects()]).catch((err) => {
+      const msg = err?.response?.data?.detail || 'No se pudo validar la sesion. Volvé a iniciar sesion.';
+      setError(String(msg));
       localStorage.removeItem('arqia_token');
       setToken('');
       setMe(null);
