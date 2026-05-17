@@ -389,6 +389,53 @@ function App() {
     }
   };
 
+  const ScalePanel = ({ ultimo }) => {
+    const raw = ultimo?.escala_detectada;
+    const tieneIa = raw != null && raw !== '' && !Number.isNaN(Number(raw));
+    const iaText = tieneIa ? Number(raw).toFixed(2) : null;
+    const modo = ultimo?.meta?.escala_modo;
+    const modoLabel =
+      modo === 'ocr'
+        ? 'OCR sobre linea verde'
+        : modo === 'manual'
+          ? 'Usando valor manual'
+          : modo === 'sin_linea'
+            ? 'Sin traza verde detectada'
+            : null;
+
+    return (
+      <div className="scale-panel">
+        <div className="scale-panel-head">
+          <span className="eyebrow">Calibracion</span>
+          <strong className="scale-panel-title">Escala del plano</strong>
+        </div>
+        <div className="scale-panel-cols">
+          <div className="scale-field">
+            <label htmlFor="ref-metros">Respaldo manual</label>
+            <div className="scale-input-wrap">
+              <input
+                id="ref-metros"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={referencia}
+                onChange={(e) => setReferencia(e.target.value)}
+              />
+              <span className="scale-suffix">m</span>
+            </div>
+            <p className="scale-hint">Si el OCR no lee el numero junto al verde.</p>
+          </div>
+          <div className={`scale-field scale-readout${!tieneIa ? ' is-empty' : ''}`}>
+            <span className="scale-readout-label">Ultimo analisis</span>
+            <p className="scale-readout-value">{tieneIa ? `${iaText} m` : '—'}</p>
+            {modoLabel && <p className="scale-readout-meta">{modoLabel}</p>}
+            {!tieneIa && !modoLabel && <p className="scale-readout-meta">Procesa un plano para ver la lectura.</p>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const demoGranTotal = demoRuns.filter((r) => r.tipo !== 'terreno').reduce((acc, r) => acc + Number(r.total || 0), 0);
   const demoUltimo = demoRuns[0];
 
@@ -471,18 +518,14 @@ function App() {
           </aside>
 
           <section className="main-panel">
-            <div className="panel-header">
+            <div className="panel-header panel-header--split">
               <div>
                 <span className="eyebrow">Panel de computo</span>
                 <h2>Modo demostracion</h2>
                 <p>Los analisis se muestran solo en este navegador. La API usa el mismo motor que en produccion, sin persistencia.</p>
               </div>
-              <div className="panel-actions">
-                <label className="scale-control">
-                  Escala manual (m)
-                  <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
-                </label>
-                <div className="usage-pill">Escala detectada IA: {demoUltimo?.escala_detectada != null ? `${Number(demoUltimo.escala_detectada).toFixed(2)} m` : '-'}</div>
+              <div className="panel-actions panel-actions--scale">
+                <ScalePanel ultimo={demoUltimo} />
               </div>
             </div>
 
@@ -730,24 +773,25 @@ function App() {
           </div>
         </aside>
 
-        <section className="main-panel">
-          <div className="panel-header">
-            <div>
-              <span className="eyebrow">Panel de computo</span>
-              <h2>{activeProject?.name || 'Selecciona una obra'}</h2>
-              <p>{activeProject?.client || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
+          <section className="main-panel">
+            <div className="panel-header panel-header--split">
+              <div>
+                <span className="eyebrow">Panel de computo</span>
+                <h2>{activeProject?.name || 'Selecciona una obra'}</h2>
+                <p>{activeProject?.client || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
+              </div>
+              <div className="panel-header-aside">
+                <ScalePanel ultimo={lastProcess} />
+                <div className="panel-toolbar">
+                  <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>
+                    Exportar CSV
+                  </button>
+                  <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
+                    Eliminar obra
+                  </button>
+                </div>
+              </div>
             </div>
-            <div className="panel-actions">
-              <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>Exportar CSV</button>
-                            <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>Eliminar obra</button>
-              <label className="scale-control">
-                Escala manual
-                <input type="number" min="0.1" step="0.1" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
-                m
-              </label>
-              <div className="usage-pill">Escala detectada IA: {lastProcess?.escala_detectada ? `${Number(lastProcess.escala_detectada).toFixed(2)} m` : "-"}</div>
-            </div>
-          </div>
 
           {error && <div className="error-box">{error}</div>}
 
