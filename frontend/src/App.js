@@ -57,6 +57,20 @@ const MUESTRA_ASSET = {
   terreno: 'plano-muestra-terreno',
 };
 
+function ModuleIconSvg({ tipo }) {
+  return (
+    <img
+      className="module-icon-img"
+      src={`/icons/modulo-${tipo}.svg?v=1`}
+      alt=""
+      width={24}
+      height={24}
+      loading="lazy"
+      decoding="async"
+    />
+  );
+}
+
 const formatoMoneda = (valor) =>
   new Intl.NumberFormat('es-AR', {
     style: 'currency',
@@ -891,7 +905,9 @@ function App() {
               {modulos.map((modulo) => (
                 <div className="modulo-card" key={modulo.tipo}>
                   <div className="card-header">
-                    <span className="module-icon">{modulo.icono}</span>
+                    <span className="module-icon" aria-hidden>
+                      <ModuleIconSvg tipo={modulo.tipo} />
+                    </span>
                     <div>
                       <h3>{modulo.titulo}</h3>
                       <p>Procesamiento puntual, sin guardar en tu estudio.</p>
@@ -1296,7 +1312,9 @@ function App() {
             {modulos.map((modulo) => (
               <div className="modulo-card" key={modulo.tipo}>
                 <div className="card-header">
-                  <span className="module-icon">{modulo.icono}</span>
+                  <span className="module-icon" aria-hidden>
+                    <ModuleIconSvg tipo={modulo.tipo} />
+                  </span>
                   <div>
                     <h3>{modulo.titulo}</h3>
                     <p>Procesa y guarda el resultado en esta obra.</p>

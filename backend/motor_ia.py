@@ -136,14 +136,14 @@ def _ocr_float_desde_gris(prep_gray):
         prep_gray = cv2.resize(prep_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
     def leer(img_gray):
-        for cfg in ("--psm 7", "--psm 11", "--psm 6"):
+        for cfg in ("--psm 8", "--psm 7", "--psm 11", "--psm 6"):
             t = pytesseract.image_to_string(img_gray, config=cfg)
             v = _primer_float_en_texto(t)
             if v is not None and 0.05 < v < 500:
                 return v
         for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
             r = cv2.rotate(img_gray, rot)
-            for cfg in ("--psm 11", "--psm 7"):
+            for cfg in ("--psm 8", "--psm 11", "--psm 7"):
                 t = pytesseract.image_to_string(r, config=cfg)
                 v = _primer_float_en_texto(t)
                 if v is not None and 0.05 < v < 500:
@@ -163,7 +163,7 @@ def extraer_numero_escala(img, mask_verde):
 
     margen_x = 90
     margen_y_arriba = 55
-    margen_y_abajo = 150
+    margen_y_abajo = 200
     y1 = max(0, y - margen_y_arriba)
     y2 = min(img.shape[0], y + h + margen_y_abajo)
     x1 = max(0, x - margen_x)
