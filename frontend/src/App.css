@@ -516,6 +516,10 @@ input:focus {
   justify-content: flex-end;
 }
 
+.mobile-menu-btn {
+  display: none;
+}
+
 .usage-pill,
 .plan-pill,
 .nav-btn {
@@ -1194,6 +1198,182 @@ input[type='file'] {
   background: #090909;
 }
 
+.edit-project-form {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid #2b3037;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #17191d 0%, #111317 100%);
+}
+
+.edit-project-head h3 {
+  margin: 4px 0 0;
+  color: #fff;
+  font-size: 1.05rem;
+}
+
+.edit-project-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.edit-project-grid input {
+  width: 100%;
+  border: 1px solid #3d424a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #0e1014;
+  color: #fff;
+}
+
+.history-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.history-list-head h2 {
+  margin: 0;
+}
+
+.compare-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #d4af37;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.history-card.is-compare {
+  border-color: rgba(212, 175, 55, 0.55);
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.25);
+}
+
+.plans-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.plan-card {
+  padding: 18px;
+  border: 1px solid #2b3037;
+  border-radius: 8px;
+  background: #12151a;
+}
+
+.plan-card--pro {
+  border-color: rgba(212, 175, 55, 0.55);
+  background: linear-gradient(165deg, #1c1810 0%, #12151a 100%);
+}
+
+.plan-card h3 {
+  margin: 4px 0 8px;
+  color: #fff;
+  font-size: 1.4rem;
+}
+
+.plan-price {
+  margin: 0 0 12px;
+  color: #d4af37;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.plan-price small {
+  font-size: 0.85rem;
+  color: #aeb5bf;
+  font-weight: 500;
+}
+
+.plan-card ul {
+  margin: 0 0 16px;
+  padding-left: 18px;
+  color: #c9ced6;
+  display: grid;
+  gap: 6px;
+}
+
+.compare-totals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.compare-totals div {
+  padding: 12px;
+  border: 1px solid #2b3037;
+  border-radius: 8px;
+  background: #12151a;
+}
+
+.compare-totals span {
+  display: block;
+  color: #9aa3ae;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.compare-totals strong {
+  display: block;
+  margin-top: 4px;
+  color: #fff;
+  font-size: 1.15rem;
+}
+
+.compare-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #2b3037;
+  text-align: left;
+  vertical-align: top;
+}
+
+.compare-table th {
+  color: #d4af37;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.compare-images {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.compare-images img {
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border: 1px solid #2b3037;
+  border-radius: 6px;
+  background: #090909;
+}
+
 @media (max-width: 900px) {
   .auth-page,
   .workspace {
@@ -1208,10 +1388,39 @@ input[type='file'] {
     font-size: 4.5rem;
   }
 
-  .topbar,
+  .topbar {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
   .panel-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .mobile-menu-btn {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .top-actions {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .top-actions.is-open {
+    display: flex;
+  }
+
+  .top-actions .nav-btn,
+  .top-actions .usage-pill,
+  .top-actions .plan-pill,
+  .top-actions a.nav-btn {
+    width: 100%;
+    text-align: center;
   }
 
   .panel-header-aside {
@@ -1226,10 +1435,26 @@ input[type='file'] {
 
   .panel-toolbar {
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .kpi-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .edit-project-grid,
+  .plans-grid,
+  .compare-totals,
+  .compare-images {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-block h1 {
+    font-size: 2.4rem;
+  }
+
+  .logo-img {
+    width: 64px;
   }
 }
 
@@ -1256,6 +1481,15 @@ input[type='file'] {
 
   .workspace,
   .topbar {
-    padding: 20px;
+    padding: 16px;
+  }
+
+  .modulo-card {
+    padding: 14px;
+  }
+
+  .custom-file-upload {
+    width: 100%;
+    text-align: center;
   }
 }
