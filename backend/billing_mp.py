@@ -50,6 +50,21 @@ def _request(method: str, path: str, body: dict | None = None) -> dict[str, Any]
         raise RuntimeError(f"Mercado Pago HTTP {exc.code}: {detail}") from exc
 
 
+def _sanitize_back_url(back_url: str) -> str:
+    url = (back_url or "").strip()
+    if not url:
+        raise RuntimeError("back_url vacia: configura APP_URL=https://arq-ia.pro en Render.")
+    if "://" not in url:
+        url = f"https://{url.lstrip('/')}"
+    # MP suele rechazar query/fragment en preapproval.
+    url = url.split("#", 1)[0].split("?", 1)[0]
+    if not url.endswith("/"):
+        url = f"{url}/"
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise RuntimeError(f"back_url invalida: {back_url!r}")
+    return url
+
+
 def create_subscription_checkout(
     *,
     payer_email: str,
@@ -57,11 +72,12 @@ def create_subscription_checkout(
     back_url: str,
 ) -> dict[str, Any]:
     """Crea preapproval pending y devuelve init_point para redirigir al usuario."""
+    safe_back_url = _sanitize_back_url(back_url)
     payload: dict[str, Any] = {
         "reason": MP_REASON,
         "external_reference": str(external_reference),
         "payer_email": payer_email,
-        "back_url": back_url,
+        "back_url": safe_back_url,
         "status": "pending",
     }
     if MP_PREAPPROVAL_PLAN_ID:

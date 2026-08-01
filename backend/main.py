@@ -42,7 +42,17 @@ def normalize_database_url(url: str) -> str:
 
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./arq_ia.db"))
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
-APP_URL = os.getenv("APP_URL", "http://localhost:3000")
+def normalize_app_url(raw: str | None) -> str:
+    """Mercado Pago exige back_url absoluta http(s) sin basura."""
+    value = (raw or "").strip().rstrip("/")
+    if not value:
+        return "https://arq-ia.pro"
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    return f"https://{value.lstrip('/')}"
+
+
+APP_URL = normalize_app_url(os.getenv("APP_URL", "https://arq-ia.pro"))
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
 APP_VERSION = os.getenv("APP_VERSION", "dev")
@@ -920,10 +930,12 @@ def create_checkout_session(user: User = Depends(current_user), db: Session = De
         )
 
     try:
+        # MP preapproval rechaza back_url con querystring en varios casos.
+        back_url = f"{APP_URL.rstrip('/')}/"
         sub = create_subscription_checkout(
             payer_email=user.email,
             external_reference=f"studio_{user.studio_id}",
-            back_url=f"{APP_URL.rstrip('/')}?billing=success",
+            back_url=back_url,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
