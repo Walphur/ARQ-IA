@@ -131,7 +131,7 @@ def verify_webhook_signature(
 
 def billing_public_info() -> dict[str, Any]:
     free_limit = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
-    paid_limit = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
+    paid_limit = int(os.getenv("PAID_MONTHLY_LIMIT", "200"))
     return {
         "provider": "mercadopago",
         "configured": mp_configured(),

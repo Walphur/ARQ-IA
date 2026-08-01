@@ -55,7 +55,7 @@ def normalize_app_url(raw: str | None) -> str:
 
 APP_URL = normalize_app_url(os.getenv("APP_URL", "https://arq-ia.pro"))
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
-PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
+PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "200"))
 APP_VERSION = os.getenv("APP_VERSION", "dev")
 DEMO_RATE_WINDOW_SEC = int(os.getenv("DEMO_RATE_WINDOW_SEC", "3600"))
 DEMO_RATE_MAX = int(os.getenv("DEMO_RATE_MAX", "30"))
@@ -134,6 +134,9 @@ class Studio(Base):
     name = Column(String(180), nullable=False)
     plan_status = Column(String(40), nullable=False, default="trial")
     monthly_limit = Column(Integer, nullable=False, default=FREE_MONTHLY_LIMIT)
+    # Cupo mensual acumulativo: suma al procesar y NO baja al borrar analisis.
+    usage_month_key = Column(String(7), nullable=True)  # YYYY-MM UTC
+    usage_count = Column(Integer, nullable=False, default=0)
     # Legacy Stripe (ya no se usa; se mantiene por DBs existentes).
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_subscription_id = Column(String(255), nullable=True)
@@ -279,6 +282,7 @@ def startup():
     Base.metadata.create_all(bind=engine)
     ensure_process_result_meta_column()
     ensure_studio_mp_preapproval_column()
+    ensure_studio_usage_columns()
 
 
 def ensure_process_result_meta_column():
@@ -307,6 +311,43 @@ def ensure_studio_mp_preapproval_column():
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE studios ADD COLUMN mp_preapproval_id VARCHAR(255)"))
+
+
+def ensure_studio_usage_columns():
+    """Agrega contador mensual acumulativo y backfill desde procesos del mes."""
+    inspector = inspect(engine)
+    if "studios" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("studios")}
+    with engine.begin() as conn:
+        if "usage_month_key" not in cols:
+            conn.execute(text("ALTER TABLE studios ADD COLUMN usage_month_key VARCHAR(7)"))
+        if "usage_count" not in cols:
+            if DATABASE_URL.startswith("sqlite"):
+                conn.execute(text("ALTER TABLE studios ADD COLUMN usage_count INTEGER DEFAULT 0 NOT NULL"))
+            else:
+                conn.execute(text("ALTER TABLE studios ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0"))
+
+    # Backfill una sola vez: estudios sin mes cargado toman el conteo actual de procesos del mes.
+    key = datetime.now(timezone.utc).strftime("%Y-%m")
+    start = month_start()
+    db = SessionLocal()
+    try:
+        studios = db.query(Studio).filter(Studio.usage_month_key.is_(None)).all()
+        for studio in studios:
+            used = (
+                db.query(Process)
+                .join(Project)
+                .filter(Project.studio_id == studio.id, Process.created_at >= start)
+                .count()
+            )
+            studio.usage_month_key = key
+            studio.usage_count = int(used)
+            db.add(studio)
+        if studios:
+            db.commit()
+    finally:
+        db.close()
 
 
 def hash_password(password: str) -> str:
@@ -419,18 +460,39 @@ def month_start() -> datetime:
     return datetime(now.year, now.month, 1, tzinfo=timezone.utc)
 
 
+def current_usage_month_key() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def sync_studio_usage_month(studio: Studio) -> None:
+    """Reinicia el cupo solo al cambiar de mes (UTC)."""
+    key = current_usage_month_key()
+    if studio.usage_month_key != key:
+        studio.usage_month_key = key
+        studio.usage_count = 0
+
+
+def used_this_month(studio: Studio) -> int:
+    if studio.usage_month_key != current_usage_month_key():
+        return 0
+    return int(studio.usage_count or 0)
+
+
 def ensure_usage_available(db: Session, studio: Studio):
-    used = (
-        db.query(Process)
-        .join(Project)
-        .filter(Project.studio_id == studio.id, Process.created_at >= month_start())
-        .count()
-    )
-    if used >= studio.monthly_limit:
+    sync_studio_usage_month(studio)
+    db.add(studio)
+    if used_this_month(studio) >= studio.monthly_limit:
         raise HTTPException(
             status_code=402,
             detail=f"Tu plan permite {studio.monthly_limit} planos por mes. Actualiza la suscripcion para seguir.",
         )
+
+
+def consume_usage(db: Session, studio: Studio) -> None:
+    """Suma 1 al cupo del mes. No se revierte al borrar un analisis."""
+    sync_studio_usage_month(studio)
+    studio.usage_count = int(studio.usage_count or 0) + 1
+    db.add(studio)
 
 
 # Modulos incluidos solo en Plan Pro (Mercado Pago activo).
@@ -571,12 +633,14 @@ def reset_password(data: ResetPasswordIn, db: Session = Depends(get_db)):
 
 @app.get("/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    used = (
-        db.query(Process)
-        .join(Project)
-        .filter(Project.studio_id == user.studio_id, Process.created_at >= month_start())
-        .count()
-    )
+    studio = user.studio
+    key = current_usage_month_key()
+    if studio.usage_month_key != key:
+        studio.usage_month_key = key
+        studio.usage_count = 0
+        db.add(studio)
+        db.commit()
+        db.refresh(studio)
     return {
         "id": user.id,
         "name": user.name,
@@ -586,12 +650,12 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "can_manage_invites": user.role == "owner",
         "can_manage_billing": user.role == "owner",
         "studio": {
-            "id": user.studio.id,
-            "name": user.studio.name,
-            "plan_status": user.studio.plan_status,
-            "monthly_limit": user.studio.monthly_limit,
-            "used_this_month": used,
-            "has_subscription": bool(user.studio.mp_preapproval_id),
+            "id": studio.id,
+            "name": studio.name,
+            "plan_status": studio.plan_status,
+            "monthly_limit": studio.monthly_limit,
+            "used_this_month": used_this_month(studio),
+            "has_subscription": bool(studio.mp_preapproval_id),
         },
         "billing": billing_public_info(),
     }
@@ -1022,6 +1086,7 @@ async def calcular_en_obra(
         result_meta=result_meta,
     )
     db.add(process)
+    consume_usage(db, user.studio)
     db.commit()
     db.refresh(process)
     return serialize_process(process)
