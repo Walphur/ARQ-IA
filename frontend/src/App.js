@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import './App.css';
-import bannerFondo from './banner-fondo.png';
+import bannerFondo from './banner-fondo.jpg';
 
 const DEFAULT_API_URL =
   window.location.hostname === 'localhost'
@@ -215,13 +215,16 @@ function ColorGuidePanel({ onClose }) {
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('arqia_token') || '');
-  const [authMode, setAuthMode] = useState('login');
+  const [authMode, setAuthMode] = useState('login'); // login | register | forgot | reset
   const [authForm, setAuthForm] = useState({
     studio_name: '',
     name: '',
     email: '',
     password: '',
   });
+  const [resetToken, setResetToken] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
+  const [lastInviteEmailSent, setLastInviteEmailSent] = useState(null);
   const [me, setMe] = useState(null);
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('arqia_project_id') || '');
@@ -316,6 +319,16 @@ function App() {
       return;
     }
     const params = new URLSearchParams(window.location.search);
+    const reset = params.get('reset');
+    if (reset) {
+      setResetToken(reset);
+      setAuthMode('reset');
+      setInviteInfo(null);
+      setInviteLoading(false);
+      setError('');
+      setAuthNotice('Elegi una nueva clave para tu cuenta.');
+      return;
+    }
     const raw = params.get('invite');
     if (!raw) {
       setInviteInfo(null);
@@ -430,9 +443,66 @@ function App() {
     }
   };
 
+  const clearResetQuery = () => {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('reset');
+    const qs = u.searchParams.toString();
+    window.history.replaceState({}, '', `${u.pathname}${qs ? `?${qs}` : ''}`);
+    setResetToken('');
+  };
+
   const submitAuth = async (event) => {
     event.preventDefault();
     setError('');
+    setAuthNotice('');
+
+    if (authMode === 'forgot') {
+      if (!authForm.email.trim()) {
+        setError('Ingresa tu email.');
+        return;
+      }
+      setLoading('auth');
+      try {
+        const res = await postAuthWithFallback('/auth/forgot-password', { email: authForm.email.trim() });
+        if (res.data.dev_reset_url) {
+          setAuthNotice(`${res.data.detail || 'Listo.'} Enlace de desarrollo: ${res.data.dev_reset_url}`);
+        } else {
+          setAuthNotice(res.data.detail || 'Si el email existe, enviamos un enlace para restablecer la clave.');
+        }
+      } catch (err) {
+        setError(getErrorMessage(err, 'No se pudo enviar el email de recuperacion.'));
+      } finally {
+        setLoading('');
+      }
+      return;
+    }
+
+    if (authMode === 'reset') {
+      if (!resetToken) {
+        setError('Falta el token de recuperacion. Pedi un enlace nuevo.');
+        return;
+      }
+      if ((authForm.password || '').length < 8) {
+        setError('La clave debe tener al menos 8 caracteres.');
+        return;
+      }
+      setLoading('auth');
+      try {
+        const res = await postAuthWithFallback('/auth/reset-password', {
+          token: resetToken,
+          password: authForm.password,
+        });
+        clearResetQuery();
+        setAuthMode('login');
+        setAuthNotice(res.data.detail || 'Clave actualizada. Ya podes ingresar.');
+        setAuthForm((f) => ({ ...f, password: '' }));
+      } catch (err) {
+        setError(getErrorMessage(err, 'No se pudo restablecer la clave.'));
+      } finally {
+        setLoading('');
+      }
+      return;
+    }
 
     if (authMode === 'register') {
       if (!authForm.studio_name.trim() || !authForm.name.trim()) {
@@ -652,12 +722,17 @@ function App() {
     if (!inviteForm.email.trim()) return;
     setLoading('invite');
     setError('');
+    setLastInviteEmailSent(null);
     try {
       const res = await api.post('/studio/invitations', {
         email: inviteForm.email.trim(),
         role: inviteForm.role,
       });
       setLastInviteUrl(res.data.invite_url || '');
+      setLastInviteEmailSent(Boolean(res.data.email_sent));
+      if (!res.data.email_sent && res.data.email_error) {
+        setError(`Invitacion creada, pero el email no se envio: ${res.data.email_error}. Copia el enlace abajo.`);
+      }
       setInviteForm({ email: '', role: 'editor' });
       const list = await api.get('/studio/invitations');
       setInvitations(list.data);
@@ -1106,18 +1181,27 @@ function App() {
         <form className="auth-card" onSubmit={submitAuth}>
           <div>
             <span className="eyebrow">Acceso privado</span>
-            <h2>{authMode === 'login' ? 'Ingresar al estudio' : 'Crear un estudio'}</h2>
+            <h2>
+              {authMode === 'login' && 'Ingresar al estudio'}
+              {authMode === 'register' && 'Crear un estudio'}
+              {authMode === 'forgot' && 'Recuperar clave'}
+              {authMode === 'reset' && 'Nueva clave'}
+            </h2>
           </div>
-          <div className="segmented">
-            <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => { setAuthMode('login'); setError(''); }}>
-              Ingresar
-            </button>
-            <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => { setAuthMode('register'); setError(''); }}>
-              Crear estudio
-            </button>
-          </div>
+          {(authMode === 'login' || authMode === 'register') && (
+            <div className="segmented">
+              <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => { setAuthMode('login'); setError(''); setAuthNotice(''); }}>
+                Ingresar
+              </button>
+              <button type="button" className={authMode === 'register' ? 'active' : ''} onClick={() => { setAuthMode('register'); setError(''); setAuthNotice(''); }}>
+                Crear estudio
+              </button>
+            </div>
+          )}
 
           {authMode === 'login' && <small className="auth-help">Si no tenes cuenta todavia, primero crea tu usuario en "Crear estudio".</small>}
+          {authMode === 'forgot' && <small className="auth-help">Te enviamos un enlace al email para elegir una clave nueva.</small>}
+          {authMode === 'reset' && <small className="auth-help">Minimo 8 caracteres.</small>}
 
           {authMode === 'register' && (
             <>
@@ -1125,26 +1209,68 @@ function App() {
               <input placeholder="Tu nombre" value={authForm.name} onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })} />
             </>
           )}
-          <input type="email" placeholder="Email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} />
-          <input type="password" placeholder="Clave" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} />
+          {(authMode === 'login' || authMode === 'register' || authMode === 'forgot') && (
+            <input type="email" placeholder="Email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} />
+          )}
+          {(authMode === 'login' || authMode === 'register' || authMode === 'reset') && (
+            <input
+              type="password"
+              placeholder={authMode === 'reset' ? 'Nueva clave (min. 8)' : 'Clave'}
+              value={authForm.password}
+              onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+            />
+          )}
+          {authNotice && <div className="auth-help" style={{ color: '#d4af37' }}>{authNotice}</div>}
           {error && <div className="error-box">{error}</div>}
           <button className="primary-btn" disabled={loading === 'auth'}>
-            {loading === 'auth' ? 'Procesando...' : authMode === 'login' ? 'Entrar' : 'Crear cuenta'}
+            {loading === 'auth'
+              ? 'Procesando...'
+              : authMode === 'login'
+                ? 'Entrar'
+                : authMode === 'register'
+                  ? 'Crear cuenta'
+                  : authMode === 'forgot'
+                    ? 'Enviar enlace'
+                    : 'Guardar clave'}
           </button>
-          <button
-            type="button"
-            className="ghost-btn"
-            disabled={loading === 'auth'}
-            onClick={() => {
-              setDemoMode(true);
-              setLastDemoUpload(null);
-              setError('');
-              setMostrarGuia(false);
-            }}
-          >
-            Probar sin cuenta
-          </button>
-          <small className="auth-help">En modo prueba podes subir planos con el motor real; no se guardan en tu estudio.</small>
+          {authMode === 'login' && (
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={loading === 'auth'}
+              onClick={() => { setAuthMode('forgot'); setError(''); setAuthNotice(''); }}
+            >
+              Olvide mi clave
+            </button>
+          )}
+          {(authMode === 'forgot' || authMode === 'reset') && (
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={loading === 'auth'}
+              onClick={() => { clearResetQuery(); setAuthMode('login'); setError(''); setAuthNotice(''); }}
+            >
+              Volver a ingresar
+            </button>
+          )}
+          {(authMode === 'login' || authMode === 'register') && (
+            <>
+              <button
+                type="button"
+                className="ghost-btn"
+                disabled={loading === 'auth'}
+                onClick={() => {
+                  setDemoMode(true);
+                  setLastDemoUpload(null);
+                  setError('');
+                  setMostrarGuia(false);
+                }}
+              >
+                Probar sin cuenta
+              </button>
+              <small className="auth-help">En modo prueba podes subir planos con el motor real; no se guardan en tu estudio.</small>
+            </>
+          )}
         </form>
         )}
         <div className="precios-bar auth-precios">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
@@ -1256,7 +1382,7 @@ function App() {
             {me?.can_manage_invites ? (
               <>
                 <p className="onboarding-lead">
-                  Invita por email con rol editor o solo lectura. La persona abre el enlace, elige clave y entra a este estudio.
+                  Invita por email con rol editor o solo lectura. Si Resend esta configurado, el colega recibe el enlace automaticamente.
                 </p>
                 <form className="invite-form" onSubmit={crearInvitacion}>
                   <input
@@ -1270,12 +1396,16 @@ function App() {
                     <option value="viewer">Solo lectura</option>
                   </select>
                   <button type="submit" className="primary-btn" disabled={loading === 'invite'}>
-                    {loading === 'invite' ? 'Creando...' : 'Crear invitacion'}
+                    {loading === 'invite' ? 'Enviando...' : 'Invitar por email'}
                   </button>
                 </form>
                 {lastInviteUrl && (
                   <div className="invite-url-box">
-                    <p className="auth-help">Enlace (copialo y envialo por el canal que uses):</p>
+                    <p className="auth-help">
+                      {lastInviteEmailSent
+                        ? 'Email enviado. Tambien podes copiar el enlace:'
+                        : 'Enlace (copialo si el email no salio):'}
+                    </p>
                     <code className="invite-url-code">{lastInviteUrl}</code>
                     <button type="button" className="nav-btn" onClick={() => copiarTexto(lastInviteUrl)}>
                       Copiar enlace
