@@ -5,22 +5,110 @@ import bannerFondo from './banner-fondo.jpg';
 
 const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
 const PAGE_HOST = (typeof window !== 'undefined' ? window.location.hostname : '').replace(/^www\./, '');
+const ONRENDER_API_URL = 'https://arq-ia-backend.onrender.com';
 const DEFAULT_API_URL =
   !PAGE_HOST || PAGE_HOST === 'localhost' || PAGE_HOST === '127.0.0.1'
     ? 'http://localhost:8000'
     : `https://api.${PAGE_HOST}`;
 
-/** Evita el hostname *.onrender.com cuando el sitio ya tiene api.{dominio} (mas estable). */
-function resolveApiUrl() {
-  if (ENV_API_URL && ENV_API_URL.includes('onrender.com') && PAGE_HOST && !PAGE_HOST.includes('onrender.com')) {
-    return `https://api.${PAGE_HOST}`;
-  }
-  return ENV_API_URL || DEFAULT_API_URL;
+const AUTH_TIMEOUT_MS = 45000;
+const API_TIMEOUT_MS = 30000;
+const CALCULAR_TIMEOUT_MS = 180000;
+
+function normalizeApiUrl(url) {
+  return String(url || '')
+    .trim()
+    .replace(/\/+$/, '');
 }
 
-const API_URL = resolveApiUrl();
-const API_TIMEOUT_MS = 25000;
+function readSavedApiUrl() {
+  try {
+    return normalizeApiUrl(sessionStorage.getItem('arqia_api_url'));
+  } catch {
+    return '';
+  }
+}
+
+function saveApiUrl(url) {
+  const n = normalizeApiUrl(url);
+  if (!n) return;
+  try {
+    sessionStorage.setItem('arqia_api_url', n);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Lista de hosts a probar si uno no responde (custom domain vs onrender). */
+function buildApiCandidates() {
+  const list = [];
+  const add = (u) => {
+    const n = normalizeApiUrl(u);
+    if (n && !list.includes(n)) list.push(n);
+  };
+  add(readSavedApiUrl());
+  add(ENV_API_URL);
+  add(DEFAULT_API_URL);
+  if (PAGE_HOST && PAGE_HOST !== 'localhost' && PAGE_HOST !== '127.0.0.1' && !PAGE_HOST.includes('onrender.com')) {
+    add(`https://api.${PAGE_HOST}`);
+    add(ONRENDER_API_URL);
+  }
+  return list.length ? list : [DEFAULT_API_URL];
+}
+
+const API_CANDIDATES = buildApiCandidates();
+let API_URL = API_CANDIDATES[0];
 axios.defaults.timeout = API_TIMEOUT_MS;
+
+function isTransportError(err) {
+  if (!err) return false;
+  if (err.response) return false;
+  return (
+    err.code === 'ECONNABORTED' ||
+    err.message === 'Network Error' ||
+    /timeout/i.test(err.message || '')
+  );
+}
+
+async function requestWithApiFailover(makeRequest, { timeout = API_TIMEOUT_MS } = {}) {
+  const order = [API_URL, ...API_CANDIDATES].filter(Boolean);
+  const tried = new Set();
+  let lastErr;
+  for (const base of order) {
+    if (tried.has(base)) continue;
+    tried.add(base);
+    try {
+      const res = await makeRequest(base, timeout);
+      if (base !== API_URL) {
+        API_URL = base;
+        saveApiUrl(base);
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransportError(err)) throw err;
+    }
+  }
+  throw lastErr;
+}
+
+async function probeHealthyApiUrl() {
+  const order = [API_URL, ...API_CANDIDATES].filter(Boolean);
+  const tried = new Set();
+  for (const base of order) {
+    if (tried.has(base)) continue;
+    tried.add(base);
+    try {
+      await axios.get(`${base}/health`, { timeout: 8000 });
+      API_URL = base;
+      saveApiUrl(base);
+      return base;
+    } catch {
+      /* try next */
+    }
+  }
+  return API_URL;
+}
 
 /** Subir al cambiar la imagen de muestra en public/ (invalida cache CDN). */
 const PLANO_MUESTRA_VER = '6';
@@ -39,12 +127,18 @@ const textoLineaPrecios = (info) => {
 
 const fetchPreciosInfoPublico = async () => {
   try {
-    const r = await axios.get(`${API_URL}/precios-info`, { timeout: 12000 });
+    const r = await requestWithApiFailover(
+      (base, timeout) => axios.get(`${base}/precios-info`, { timeout }),
+      { timeout: 12000 },
+    );
     return r.data;
   } catch (err) {
     if (err?.response?.status === 404) {
       try {
-        const r = await axios.get(`${API_URL}/api/precios-info`, { timeout: 12000 });
+        const r = await requestWithApiFailover(
+          (base, timeout) => axios.get(`${base}/api/precios-info`, { timeout }),
+          { timeout: 12000 },
+        );
         return r.data;
       } catch {
         return null;
@@ -121,10 +215,16 @@ const formatoMoneda = (valor) =>
 
 const postAuthWithFallback = async (path, payload) => {
   try {
-    return await axios.post(`${API_URL}${path}`, payload, { timeout: API_TIMEOUT_MS });
+    return await requestWithApiFailover(
+      (base, timeout) => axios.post(`${base}${path}`, payload, { timeout }),
+      { timeout: AUTH_TIMEOUT_MS },
+    );
   } catch (err) {
     if (err?.response?.status === 404) {
-      return axios.post(`${API_URL}/api${path}`, payload, { timeout: API_TIMEOUT_MS });
+      return requestWithApiFailover(
+        (base, timeout) => axios.post(`${base}/api${path}`, payload, { timeout }),
+        { timeout: AUTH_TIMEOUT_MS },
+      );
     }
     throw err;
   }
@@ -132,10 +232,16 @@ const postAuthWithFallback = async (path, payload) => {
 
 const postDemoCalcular = async (formData) => {
   try {
-    return await axios.post(`${API_URL}/calcular`, formData);
+    return await requestWithApiFailover(
+      (base, timeout) => axios.post(`${base}/calcular`, formData, { timeout }),
+      { timeout: CALCULAR_TIMEOUT_MS },
+    );
   } catch (err) {
     if (err?.response?.status === 404) {
-      return axios.post(`${API_URL}/api/calcular`, formData);
+      return requestWithApiFailover(
+        (base, timeout) => axios.post(`${base}/api/calcular`, formData, { timeout }),
+        { timeout: CALCULAR_TIMEOUT_MS },
+      );
     }
     throw err;
   }
@@ -143,10 +249,16 @@ const postDemoCalcular = async (formData) => {
 
 const getPublicWithFallback = async (pathWithQuery) => {
   try {
-    return await axios.get(`${API_URL}${pathWithQuery}`);
+    return await requestWithApiFailover(
+      (base, timeout) => axios.get(`${base}${pathWithQuery}`, { timeout }),
+      { timeout: API_TIMEOUT_MS },
+    );
   } catch (err) {
     if (err?.response?.status === 404) {
-      return axios.get(`${API_URL}/api${pathWithQuery}`);
+      return requestWithApiFailover(
+        (base, timeout) => axios.get(`${base}/api${pathWithQuery}`, { timeout }),
+        { timeout: API_TIMEOUT_MS },
+      );
     }
     throw err;
   }
@@ -181,10 +293,10 @@ const getErrorMessage = (err, fallback, authMode = null) => {
   }
   if (detail) return detail;
   if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
-    return `La API no respondio a tiempo (${API_URL}). Revisa que el backend este online en Render.`;
+    return `La API no respondio a tiempo (${API_URL}). Espera unos segundos (cold start de Render) e intenta de nuevo.`;
   }
   if (err?.message === 'Network Error') {
-    return `No se pudo conectar con la API (${API_URL}). Verifica CORS y que el servicio este online.`;
+    return `No se pudo conectar con la API (${API_URL}). Reintenta; si sigue, el backend puede estar reiniciando.`;
   }
   return fallback;
 };
@@ -466,20 +578,41 @@ function App() {
   const [lastInviteUrl, setLastInviteUrl] = useState('');
   const [lastDemoUpload, setLastDemoUpload] = useState(null);
   const [lastUploadByProject, setLastUploadByProject] = useState({});
+  const [apiBase, setApiBase] = useState(API_URL);
 
   const api = useMemo(() => {
-    const instance = axios.create({ baseURL: API_URL, timeout: API_TIMEOUT_MS });
+    const instance = axios.create({ baseURL: apiBase, timeout: API_TIMEOUT_MS });
     instance.interceptors.request.use((config) => {
+      config.baseURL = API_URL;
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
+    instance.interceptors.response.use(
+      (res) => res,
+      async (err) => {
+        const cfg = err?.config;
+        if (!cfg || cfg.__arqiaRetried || !isTransportError(err)) throw err;
+        const method = String(cfg.method || 'get').toLowerCase();
+        const path = String(cfg.url || '');
+        // No reintentar uploads/OCR: pueden tardar y un retry duplicaria el cupo.
+        if (method !== 'get' && /calcular|recalcular/.test(path)) throw err;
+        cfg.__arqiaRetried = true;
+        const next = API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL));
+        if (!next) throw err;
+        API_URL = next;
+        saveApiUrl(next);
+        setApiBase(next);
+        cfg.baseURL = next;
+        return axios.request(cfg);
+      },
+    );
     return instance;
-  }, [token]);
+  }, [token, apiBase]);
 
   const textoBarraPrecios = preciosInfo
     ? textoLineaPrecios(preciosInfo)
     : preciosListo
-      ? `Precios: API sin respuesta (${API_URL})`
+      ? `Precios: API sin respuesta (${apiBase})`
       : 'Precios: conectando...';
 
   const activeProject = projects.find((project) => project.id === Number(activeProjectId));
@@ -523,14 +656,29 @@ function App() {
   };
 
   useEffect(() => {
-    setPreciosListo(false);
-    fetchPreciosInfoPublico()
-      .then((info) => setPreciosInfo(info))
-      .catch(() => setPreciosInfo(null))
-      .finally(() => setPreciosListo(true));
-    getPublicWithFallback('/billing/info')
-      .then((r) => setBillingPublic(r.data))
-      .catch(() => setBillingPublic(null));
+    let cancelled = false;
+    (async () => {
+      const healthy = await probeHealthyApiUrl();
+      if (!cancelled) setApiBase(healthy);
+      setPreciosListo(false);
+      try {
+        const info = await fetchPreciosInfoPublico();
+        if (!cancelled) setPreciosInfo(info);
+      } catch {
+        if (!cancelled) setPreciosInfo(null);
+      } finally {
+        if (!cancelled) setPreciosListo(true);
+      }
+      try {
+        const r = await getPublicWithFallback('/billing/info');
+        if (!cancelled) setBillingPublic(r.data);
+      } catch {
+        if (!cancelled) setBillingPublic(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [token, demoMode]);
 
   useEffect(() => {
@@ -937,7 +1085,9 @@ function App() {
     setLoading(tipo);
     setError('');
     try {
-      const res = await api.post(`/projects/${activeProjectId}/calcular`, formData);
+      const res = await api.post(`/projects/${activeProjectId}/calcular`, formData, {
+        timeout: CALCULAR_TIMEOUT_MS,
+      });
       setLastUploadByProject((m) => ({ ...m, [String(activeProjectId)]: { file: archivo, tipo } }));
       const metros = res?.data?.meta?.metros_referencia_usados;
       if (metros != null) {
@@ -969,6 +1119,7 @@ function App() {
       const res = await api.post(
         `/projects/${activeProjectId}/processes/${processId}/recalcular`,
         formData,
+        { timeout: CALCULAR_TIMEOUT_MS },
       );
       const metros = res?.data?.meta?.metros_referencia_usados;
       if (metros != null) {
