@@ -230,15 +230,26 @@ def analizar_nodos_canerias(mask_color):
     return int(puntas), int(codos), int(tees)
 
 
-def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladrillo_hueco_12", tipo_plano="muros"):
+def procesar_plano_ia(
+    bytes_imagen,
+    referencia_metros_manual,
+    sistema_muro="ladrillo_hueco_12",
+    tipo_plano="muros",
+    altura_muro=2.60,
+):
     nparr = np.frombuffer(bytes_imagen, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("No se pudo leer la imagen del plano.")
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    altura = 2.60
-    
+    try:
+        altura = float(altura_muro)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Altura de muro invalida.") from exc
+    if altura < 1.8 or altura > 6.0:
+        raise ValueError("Altura de muro debe estar entre 1.8 y 6.0 metros.")
+
     # --- ESCALA VERDE ---
     mask_v = cv2.inRange(hsv, np.array([40, 150, 50]), np.array([80, 255, 255]))
     px_v = np.sum(cv2.ximgproc.thinning(mask_v) > 0)
@@ -281,14 +292,45 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
         mat_carpeta = (10.5 * precio_cem_kg) + (0.03 * P.get('mat_arena_m3',0))
         mat_ceramico = (1.05 * P.get('mat_ceramico_m2',0)) + (4 * precio_peg_kg)
 
-        res["items"].append(_li("Mano Obra: Muros", m2_muros * P.get("mo_muro_hueco_m2", 0), "Mascara HSV rojo + thinning de muro; m lineales x escala; x 2,60 m; tabla mo_muro_hueco_m2."))
+        mo_aberturas = unid_aberturas * P.get("mo_abertura_unid", 0)
+        mat_aberturas = unid_aberturas * P.get("mat_abertura_promedio", 0)
+
+        res["items"].append(
+            _li(
+                "Mano Obra: Muros",
+                m2_muros * P.get("mo_muro_hueco_m2", 0),
+                f"Mascara HSV rojo + thinning; m lineales x escala; x {altura:.2f} m de altura; tabla mo_muro_hueco_m2.",
+            )
+        )
         res["items"].append(_li("Mano Obra: Revoques", m2_revoques * P.get("mo_revoque_doble_m2", 0), "Misma superficie muro x2 (revoque doble); mo_revoque_doble_m2."))
         res["items"].append(_li("Mano Obra: Pisos", m2_pisos * (P.get("mo_contrapiso_m2", 0) + P.get("mo_carpeta_m2", 0) + P.get("mo_ceramico_m2", 0)), "Mascaras gris y naranja (pisos) en m2 reales; suma MO contrapiso+carpeta+ceramico."))
-        res["items"].append(_li("Materiales: Muros", m2_muros * mat_muro, "Metros lineales muro x formulas de ladrillo/cemento segun sistema elegido."))
+        res["items"].append(
+            _li(
+                "Mano Obra: Aberturas",
+                mo_aberturas,
+                f"Contornos cian detectados ({unid_aberturas} unid.) x mo_abertura_unid.",
+            )
+        )
+        res["items"].append(
+            _li(
+                "Materiales: Muros",
+                m2_muros * mat_muro,
+                f"Metros lineales muro x formulas de ladrillo/cemento (sistema {sistema_muro}).",
+            )
+        )
         res["items"].append(_li("Materiales: Revoques", m2_revoques * mat_revoque, "Superficie revoque (2x muro) x dosificacion cemento/cal/arena."))
         res["items"].append(_li("Materiales: Pisos", m2_pisos * (mat_contrapiso + mat_carpeta + mat_ceramico), "m2 piso detectados x paquete contrapiso+carpeta+ceramico."))
+        res["items"].append(
+            _li(
+                "Materiales: Aberturas",
+                mat_aberturas,
+                f"Contornos cian ({unid_aberturas} unid.) x mat_abertura_promedio.",
+            )
+        )
 
-        img_audit[mask_gris > 0] = [255, 150, 200] 
+        img_audit[mask_gris > 0] = [255, 150, 200]
+        if unid_aberturas:
+            img_audit[mask_cian > 0] = [255, 255, 0]
         kernel = np.ones((15, 15), np.uint8)
         img_audit[cv2.bitwise_and(cv2.dilate(cv2.ximgproc.thinning(mask_rojo), kernel, iterations=1), mask_rojo) > 0] = [0, 255, 255]
 
@@ -458,6 +500,8 @@ def procesar_plano_ia(bytes_imagen, referencia_metros_manual, sistema_muro="ladr
     res["avisos"] = avisos
     res["escala_modo"] = "ocr" if escala_leida is not None else ("manual" if px_v > 0 else "sin_linea")
     res["metros_referencia_usados"] = float(metros_reales)
+    res["altura_muro"] = float(altura)
+    res["sistema_muro"] = sistema_muro
     res["precios_info"] = get_precios_info()
 
     # FIX DEL BUG 500: Solo suma plata si NO es un terreno

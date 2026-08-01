@@ -30,12 +30,18 @@ services:
         value: 20
       - key: PAID_MONTHLY_LIMIT
         value: 500
-      - key: STRIPE_SECRET_KEY
+      - key: MP_ACCESS_TOKEN
         sync: false
-      - key: STRIPE_PRICE_ID
+      - key: MP_PREAPPROVAL_PLAN_ID
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: MP_WEBHOOK_SECRET
         sync: false
+      - key: MP_AMOUNT_ARS
+        value: "14999"
+      - key: MP_CURRENCY
+        value: ARS
+      - key: MP_REASON
+        value: ARQ-IA Plan Pro (mensual)
 
   - type: static
     name: arq-ia-web

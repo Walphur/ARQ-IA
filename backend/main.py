@@ -10,7 +10,6 @@ from io import BytesIO, StringIO
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-import stripe
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +20,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
+from billing_mp import (
+    billing_public_info,
+    cancel_preapproval,
+    create_subscription_checkout,
+    get_preapproval,
+    mp_configured,
+    verify_webhook_signature,
+)
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -36,9 +43,6 @@ def normalize_database_url(url: str) -> str:
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./arq_ia.db"))
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
 APP_URL = os.getenv("APP_URL", "http://localhost:3000")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
 FREE_MONTHLY_LIMIT = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
 PAID_MONTHLY_LIMIT = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
 APP_VERSION = os.getenv("APP_VERSION", "dev")
@@ -71,7 +75,9 @@ allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://((.*\.onrende
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -110,10 +116,6 @@ def check_demo_rate_limit(request: Request):
             )
         hits.append(now)
 
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
-
-
 class Studio(Base):
     __tablename__ = "studios"
 
@@ -121,8 +123,10 @@ class Studio(Base):
     name = Column(String(180), nullable=False)
     plan_status = Column(String(40), nullable=False, default="trial")
     monthly_limit = Column(Integer, nullable=False, default=FREE_MONTHLY_LIMIT)
+    # Legacy Stripe (ya no se usa; se mantiene por DBs existentes).
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_subscription_id = Column(String(255), nullable=True)
+    mp_preapproval_id = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     users = relationship("User", back_populates="studio")
@@ -241,6 +245,7 @@ def get_db():
 def startup():
     Base.metadata.create_all(bind=engine)
     ensure_process_result_meta_column()
+    ensure_studio_mp_preapproval_column()
 
 
 def ensure_process_result_meta_column():
@@ -258,6 +263,17 @@ def ensure_process_result_meta_column():
         ddl = "ALTER TABLE processes ADD COLUMN result_meta JSON"
     with engine.begin() as conn:
         conn.execute(text(ddl))
+
+
+def ensure_studio_mp_preapproval_column():
+    inspector = inspect(engine)
+    if "studios" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("studios")}
+    if "mp_preapproval_id" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE studios ADD COLUMN mp_preapproval_id VARCHAR(255)"))
 
 
 def hash_password(password: str) -> str:
@@ -314,6 +330,25 @@ def current_user(
 def require_studio_owner(user: User) -> User:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Solo el dueño del estudio puede gestionar invitaciones.")
+    return user
+
+
+def require_can_edit(user: User) -> User:
+    """Owner y editor pueden mutar obras/analisis; viewer es solo lectura."""
+    if user.role == "viewer":
+        raise HTTPException(
+            status_code=403,
+            detail="Tu rol es solo lectura. Pedile al dueño del estudio un rol editor para subir o borrar planos.",
+        )
+    return user
+
+
+def require_can_bill(user: User) -> User:
+    if user.role != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo el dueño del estudio puede gestionar la suscripcion.",
+        )
     return user
 
 
@@ -436,14 +471,18 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "can_edit": user.role in ("owner", "editor"),
         "can_manage_invites": user.role == "owner",
+        "can_manage_billing": user.role == "owner",
         "studio": {
             "id": user.studio.id,
             "name": user.studio.name,
             "plan_status": user.studio.plan_status,
             "monthly_limit": user.studio.monthly_limit,
             "used_this_month": used,
+            "has_subscription": bool(user.studio.mp_preapproval_id),
         },
+        "billing": billing_public_info(),
     }
 
 
@@ -470,6 +509,7 @@ def list_projects(user: User = Depends(current_user), db: Session = Depends(get_
 
 @app.post("/projects")
 def create_project(data: ProjectIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     project = Project(
         studio_id=user.studio_id,
         name=data.name.strip(),
@@ -497,13 +537,17 @@ def list_processes(project_id: int, user: User = Depends(current_user), db: Sess
 
 
 @app.get("/projects/{project_id}/export.csv")
+@app.get("/api/projects/{project_id}/export.csv")
 def export_project_csv(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     output = StringIO()
-    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_numerico,escala_detectada_ia,fecha\n")
+    # 10 columnas: no incluir audit_image_base64 (rompe Excel y pesa megas).
+    output.write(
+        "obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_modulo,escala_detectada_ia,fecha\n"
+    )
     processes = (
         db.query(Process)
         .filter(Process.project_id == project.id)
@@ -511,9 +555,8 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         .all()
     )
 
-
     for process in processes:
-        for item in process.items:
+        for item in process.items or []:
             nombre = str(item.get("nom", ""))
             categoria, detalle = (nombre.split(":", 1) + [""])[:2] if ":" in nombre else ("General", nombre)
             valor_txt = str(item.get("val", ""))
@@ -528,16 +571,15 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
                 f"{float(process.total or 0):.2f}",
                 str(process.escala_detectada or ""),
                 process.created_at.isoformat(),
-                process.audit_image_base64,
             ]
-            escaped = ['"' + value.replace('"', '""') + '"' for value in row]
+            escaped = ['"' + str(value).replace('"', '""') + '"' for value in row]
             output.write(",".join(escaped) + "\n")
 
     output.seek(0)
     filename = f"arq-ia-obra-{project.id}.csv"
     return StreamingResponse(
         iter([output.getvalue()]),
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -690,6 +732,7 @@ def register_with_invitation(data: RegisterInviteIn, db: Session = Depends(get_d
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
@@ -702,6 +745,7 @@ def delete_project(project_id: int, user: User = Depends(current_user), db: Sess
 
 @app.delete("/processes/{process_id}")
 def delete_process(process_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     process = db.get(Process, process_id)
     if not process:
         raise HTTPException(status_code=404, detail="Analisis no encontrado.")
@@ -714,6 +758,26 @@ def delete_process(process_id: int, user: User = Depends(current_user), db: Sess
     return {"ok": True}
 
 
+def _parse_altura_muro(altura_muro: float) -> float:
+    try:
+        h = float(altura_muro)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Altura de muro invalida.") from exc
+    if h < 1.8 or h > 6.0:
+        raise HTTPException(status_code=400, detail="Altura de muro debe estar entre 1.8 y 6.0 metros.")
+    return h
+
+
+def _parse_sistema_muro(sistema_muro: str) -> str:
+    sistema = (sistema_muro or "ladrillo_hueco_12").strip().lower()
+    if sistema not in ("ladrillo_hueco_12", "ladrillo_comun_12"):
+        raise HTTPException(
+            status_code=400,
+            detail='Sistema de muro invalido. Usa "ladrillo_hueco_12" o "ladrillo_comun_12".',
+        )
+    return sistema
+
+
 @app.post("/projects/{project_id}/calcular")
 async def calcular_en_obra(
     project_id: int,
@@ -721,9 +785,11 @@ async def calcular_en_obra(
     referencia_metros: float = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
+    altura_muro: float = Form(2.60),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    require_can_edit(user)
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
@@ -731,9 +797,17 @@ async def calcular_en_obra(
     ensure_usage_available(db, user.studio)
     contenido = await file.read()
     validate_upload(file, contenido)
+    sistema = _parse_sistema_muro(sistema_muro)
+    altura = _parse_altura_muro(altura_muro)
 
     try:
-        resultados = procesar_plano_ia(contenido, referencia_metros, sistema_muro, tipo_plano)
+        resultados = procesar_plano_ia(
+            contenido,
+            referencia_metros,
+            sistema,
+            tipo_plano,
+            altura_muro=altura,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -747,6 +821,8 @@ async def calcular_en_obra(
         "metros_referencia_usados": resultados.get("metros_referencia_usados"),
         "precios_info": resultados.get("precios_info"),
         "avisos": resultados.get("avisos") or [],
+        "sistema_muro": sistema,
+        "altura_muro": altura,
     }
     process = Process(
         project_id=project.id,
@@ -775,12 +851,21 @@ async def calcular_demo(
     referencia_metros: float = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
+    altura_muro: float = Form(2.60),
 ):
     contenido = await file.read()
     validate_upload(file, contenido)
     check_demo_rate_limit(request)
+    sistema = _parse_sistema_muro(sistema_muro)
+    altura = _parse_altura_muro(altura_muro)
     try:
-        return procesar_plano_ia(contenido, referencia_metros, sistema_muro, tipo_plano)
+        return procesar_plano_ia(
+            contenido,
+            referencia_metros,
+            sistema,
+            tipo_plano,
+            altura_muro=altura,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -790,83 +875,151 @@ async def calcular_demo(
         ) from exc
 
 
+def _apply_preapproval_status(studio: Studio, status: str, preapproval_id: str | None = None):
+    status_norm = (status or "").strip().lower()
+    if preapproval_id:
+        studio.mp_preapproval_id = preapproval_id
+    if status_norm == "authorized":
+        studio.plan_status = "active"
+        studio.monthly_limit = PAID_MONTHLY_LIMIT
+    elif status_norm in {"paused", "cancelled", "canceled"}:
+        studio.plan_status = "inactive" if status_norm.startswith("cancel") else "paused"
+        if status_norm.startswith("cancel"):
+            studio.monthly_limit = FREE_MONTHLY_LIMIT
+
+
+def _studio_from_preapproval(db: Session, preapproval: dict) -> Studio | None:
+    pref = str(preapproval.get("external_reference") or "").strip()
+    if pref.startswith("studio_"):
+        pref = pref.removeprefix("studio_")
+    if pref.isdigit():
+        studio = db.get(Studio, int(pref))
+        if studio:
+            return studio
+    pre_id = preapproval.get("id")
+    if pre_id:
+        return db.query(Studio).filter(Studio.mp_preapproval_id == str(pre_id)).first()
+    return None
+
+
+@app.get("/billing/info")
+@app.get("/api/billing/info")
+def billing_info():
+    return billing_public_info()
+
+
 @app.post("/billing/create-checkout-session")
-def create_checkout_session(user: User = Depends(current_user)):
-    if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
-        raise HTTPException(status_code=503, detail="Stripe todavia no esta configurado.")
+@app.post("/api/billing/create-checkout-session")
+def create_checkout_session(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Crea suscripcion Mercado Pago y devuelve init_point (checkout ARS)."""
+    require_can_bill(user)
+    if not mp_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Mercado Pago todavia no esta configurado. Pedile al admin que cargue MP_ACCESS_TOKEN.",
+        )
 
-    customer_id = user.studio.stripe_customer_id
-    kwargs = {}
-    if customer_id:
-        kwargs["customer"] = customer_id
-    else:
-        kwargs["customer_email"] = user.email
+    try:
+        sub = create_subscription_checkout(
+            payer_email=user.email,
+            external_reference=f"studio_{user.studio_id}",
+            back_url=f"{APP_URL.rstrip('/')}?billing=success",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-        success_url=f"{APP_URL}?billing=success",
-        cancel_url=f"{APP_URL}?billing=cancel",
-        metadata={"studio_id": str(user.studio_id)},
-        **kwargs,
-    )
-    return {"url": session.url}
+    init_point = sub.get("init_point") or sub.get("sandbox_init_point")
+    if not init_point:
+        raise HTTPException(
+            status_code=502,
+            detail="Mercado Pago no devolvio enlace de pago. Revisa el plan o el monto configurado.",
+        )
+
+    studio = user.studio
+    if sub.get("id"):
+        studio.mp_preapproval_id = str(sub["id"])
+        db.commit()
+
+    return {"url": init_point, "provider": "mercadopago", "preapproval_id": sub.get("id")}
 
 
 @app.post("/billing/create-portal-session")
+@app.post("/api/billing/create-portal-session")
 def create_portal_session(data: BillingPortalIn, user: User = Depends(current_user)):
-    if not STRIPE_SECRET_KEY or not user.studio.stripe_customer_id:
-        raise HTTPException(status_code=503, detail="No hay cliente de Stripe configurado para este estudio.")
-    session = stripe.billing_portal.Session.create(
-        customer=user.studio.stripe_customer_id,
-        return_url=data.return_url or APP_URL,
-    )
-    return {"url": session.url}
+    """Mercado Pago no tiene Customer Portal: reabre el checkout de la suscripcion."""
+    require_can_bill(user)
+    if not user.studio.mp_preapproval_id:
+        raise HTTPException(status_code=404, detail="Este estudio aun no tiene suscripcion de Mercado Pago.")
+    try:
+        pre = get_preapproval(user.studio.mp_preapproval_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    url = pre.get("init_point") or pre.get("sandbox_init_point") or (data.return_url or APP_URL)
+    return {"url": url, "provider": "mercadopago", "status": pre.get("status")}
+
+
+@app.post("/billing/cancel")
+@app.post("/api/billing/cancel")
+def cancel_billing(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_bill(user)
+    pre_id = user.studio.mp_preapproval_id
+    if not pre_id:
+        raise HTTPException(status_code=404, detail="No hay suscripcion activa para cancelar.")
+    try:
+        cancel_preapproval(pre_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    studio = user.studio
+    _apply_preapproval_status(studio, "cancelled", pre_id)
+    db.commit()
+    return {"ok": True, "plan_status": studio.plan_status}
 
 
 @app.post("/billing/webhook")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    if not STRIPE_WEBHOOK_SECRET:
-        raise HTTPException(status_code=503, detail="Webhook no configurado.")
+@app.post("/api/billing/webhook")
+async def mercadopago_webhook(request: Request, db: Session = Depends(get_db)):
+    """Webhook MP: subscription_preapproval (y legacy topic/resource)."""
+    body = await request.json()
+    x_signature = request.headers.get("x-signature", "")
+    x_request_id = request.headers.get("x-request-id", "")
 
-    payload = await request.body()
-    signature = request.headers.get("stripe-signature", "")
+    event_type = body.get("type") or body.get("action") or body.get("topic") or ""
+    data_id = str((body.get("data") or {}).get("id") or body.get("id") or "")
+    if not data_id and isinstance(body.get("resource"), str) and "/" in body["resource"]:
+        data_id = body["resource"].rstrip("/").split("/")[-1]
+
+    # Querystring style: ?data.id=...
+    if not data_id:
+        data_id = str(request.query_params.get("data.id") or request.query_params.get("id") or "")
+
+    if not verify_webhook_signature(x_signature=x_signature, x_request_id=x_request_id, data_id=data_id):
+        raise HTTPException(status_code=401, detail="Firma de webhook invalida.")
+
+    # Solo sincronizamos ciclo de vida de suscripcion (preapproval).
+    interesting = (
+        "subscription_preapproval" in str(event_type)
+        or str(event_type) in {"subscription_preapproval", "preapproval"}
+        or str(body.get("topic", "")) in {"subscription_preapproval", "preapproval"}
+    )
+    if not interesting and not data_id:
+        return {"received": True, "ignored": True}
+
+    if not data_id:
+        return {"received": True, "ignored": True}
+
     try:
-        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Webhook invalido.") from exc
+        preapproval = get_preapproval(data_id)
+    except RuntimeError:
+        # Puede ser authorized_payment u otro recurso; ignoramos sin fallar el retry storm.
+        return {"received": True, "ignored": True}
 
-    event_type = event["type"]
-    data = event["data"]["object"]
+    studio = _studio_from_preapproval(db, preapproval)
+    if not studio:
+        return {"received": True, "studio": None}
 
-    if event_type == "checkout.session.completed":
-        studio_id = data.get("metadata", {}).get("studio_id")
-        if studio_id:
-            studio = db.get(Studio, int(studio_id))
-            if studio:
-                studio.stripe_customer_id = data.get("customer")
-                studio.stripe_subscription_id = data.get("subscription")
-                studio.plan_status = "active"
-                studio.monthly_limit = PAID_MONTHLY_LIMIT
-                db.commit()
-
-    if event_type in {"customer.subscription.deleted", "customer.subscription.paused"}:
-        subscription_id = data.get("id")
-        studio = db.query(Studio).filter(Studio.stripe_subscription_id == subscription_id).first()
-        if studio:
-            studio.plan_status = "inactive"
-            studio.monthly_limit = FREE_MONTHLY_LIMIT
-            db.commit()
-
-    if event_type in {"customer.subscription.updated", "invoice.payment_succeeded"}:
-        subscription_id = data.get("subscription") or data.get("id")
-        studio = db.query(Studio).filter(Studio.stripe_subscription_id == subscription_id).first()
-        if studio:
-            studio.plan_status = "active"
-            studio.monthly_limit = PAID_MONTHLY_LIMIT
-            db.commit()
-
-    return {"received": True}
+    _apply_preapproval_status(studio, str(preapproval.get("status") or ""), str(preapproval.get("id") or data_id))
+    db.commit()
+    return {"received": True, "studio_id": studio.id, "status": studio.plan_status}
 
 
 if __name__ == "__main__":
