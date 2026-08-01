@@ -433,6 +433,19 @@ def ensure_usage_available(db: Session, studio: Studio):
         )
 
 
+# Modulos incluidos solo en Plan Pro (Mercado Pago activo).
+PRO_ONLY_MODULES = frozenset({"agua", "luz", "techo"})
+
+
+def ensure_module_allowed(studio: Studio, tipo_plano: str):
+    tipo = (tipo_plano or "").strip().lower()
+    if tipo in PRO_ONLY_MODULES and studio.plan_status != "active":
+        raise HTTPException(
+            status_code=402,
+            detail="Este modulo es Plan Pro (agua, electricidad o techos). Activa la suscripcion con Mercado Pago.",
+        )
+
+
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "arq-ia-backend", "version": APP_VERSION, "health": "/health", "precios_info": "/precios-info", "register": "/auth/register", "login": "/auth/login"}
@@ -927,6 +940,7 @@ async def calcular_en_obra(
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     ensure_usage_available(db, user.studio)
+    ensure_module_allowed(user.studio, tipo_plano)
     contenido = await file.read()
     validate_upload(file, contenido)
     sistema = _parse_sistema_muro(sistema_muro)
