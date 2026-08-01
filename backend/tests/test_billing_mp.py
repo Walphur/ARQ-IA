@@ -43,3 +43,8 @@ def test_mp_configured_requires_token(monkeypatch):
     monkeypatch.setattr(billing_mp, "MP_AMOUNT_ARS", 1000.0)
     monkeypatch.setattr(billing_mp, "MP_PREAPPROVAL_PLAN_ID", "")
     assert billing_mp.mp_configured()
+
+
+def test_sanitize_back_url_strips_query():
+    assert billing_mp._sanitize_back_url("https://arq-ia.pro?billing=success") == "https://arq-ia.pro/"
+    assert billing_mp._sanitize_back_url("arq-ia.pro") == "https://arq-ia.pro/"
