@@ -903,14 +903,36 @@ def delete_process(process_id: int, user: User = Depends(current_user), db: Sess
     return {"ok": True}
 
 
-def _parse_altura_muro(altura_muro: float) -> float:
+def _parse_float_locale(raw, field_name: str) -> float:
+    """Acepta 7.3 o 7,3 (usuarios AR)."""
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    s = str(raw or "").strip().replace(" ", "").replace(",", ".")
+    if not s:
+        raise HTTPException(status_code=400, detail=f"{field_name} invalido.")
     try:
-        h = float(altura_muro)
+        return float(s)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} invalido.") from exc
+
+
+def _parse_altura_muro(altura_muro) -> float:
+    try:
+        h = _parse_float_locale(altura_muro, "Altura de muro")
+    except HTTPException:
+        raise
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Altura de muro invalida.") from exc
     if h < 1.8 or h > 6.0:
         raise HTTPException(status_code=400, detail="Altura de muro debe estar entre 1.8 y 6.0 metros.")
     return h
+
+
+def _parse_referencia_metros(referencia_metros) -> float:
+    metros = _parse_float_locale(referencia_metros, "Referencia de escala")
+    if metros <= 0 or metros > 500:
+        raise HTTPException(status_code=400, detail="Referencia de escala debe estar entre 0 y 500 metros.")
+    return metros
 
 
 def _parse_sistema_muro(sistema_muro: str) -> str:
@@ -931,14 +953,25 @@ def _parse_forzar_escala_manual(raw) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
 
 
+def _result_meta_from_ia(resultados: dict, sistema: str, altura: float) -> dict:
+    return {
+        "escala_modo": resultados.get("escala_modo"),
+        "metros_referencia_usados": resultados.get("metros_referencia_usados"),
+        "precios_info": resultados.get("precios_info"),
+        "avisos": resultados.get("avisos") or [],
+        "sistema_muro": sistema,
+        "altura_muro": altura,
+    }
+
+
 @app.post("/projects/{project_id}/calcular")
 async def calcular_en_obra(
     project_id: int,
     file: UploadFile = File(...),
-    referencia_metros: float = Form(...),
+    referencia_metros: str = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
-    altura_muro: float = Form(2.60),
+    altura_muro: str = Form("2.60"),
     forzar_escala_manual: str = Form("0"),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
@@ -954,12 +987,13 @@ async def calcular_en_obra(
     validate_upload(file, contenido)
     sistema = _parse_sistema_muro(sistema_muro)
     altura = _parse_altura_muro(altura_muro)
+    metros_ref = _parse_referencia_metros(referencia_metros)
     forzar_manual = _parse_forzar_escala_manual(forzar_escala_manual)
 
     try:
         resultados = procesar_plano_ia(
             contenido,
-            referencia_metros,
+            metros_ref,
             sistema,
             tipo_plano,
             altura_muro=altura,
@@ -973,14 +1007,7 @@ async def calcular_en_obra(
             detail="Error interno al procesar la imagen. Revisa formato, tamano y que el servicio de OCR este disponible.",
         ) from exc
 
-    result_meta = {
-        "escala_modo": resultados.get("escala_modo"),
-        "metros_referencia_usados": resultados.get("metros_referencia_usados"),
-        "precios_info": resultados.get("precios_info"),
-        "avisos": resultados.get("avisos") or [],
-        "sistema_muro": sistema,
-        "altura_muro": altura,
-    }
+    result_meta = _result_meta_from_ia(resultados, sistema, altura)
     process = Process(
         project_id=project.id,
         user_id=user.id,
@@ -1000,15 +1027,73 @@ async def calcular_en_obra(
     return serialize_process(process)
 
 
+@app.post("/projects/{project_id}/processes/{process_id}/recalcular")
+async def recalcular_proceso(
+    project_id: int,
+    process_id: int,
+    referencia_metros: str = Form(...),
+    sistema_muro: str = Form("ladrillo_hueco_12"),
+    altura_muro: str = Form("2.60"),
+    forzar_escala_manual: str = Form("1"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Reaplica escala/params sobre el archivo original guardado (sin gastar otro credito)."""
+    require_can_edit(user)
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+
+    process = db.get(Process, process_id)
+    if not process or process.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+
+    ensure_module_allowed(user.studio, process.tipo_plano)
+    if not process.original_file:
+        raise HTTPException(status_code=400, detail="Este analisis no tiene el plano original para recalcular.")
+
+    sistema = _parse_sistema_muro(sistema_muro)
+    altura = _parse_altura_muro(altura_muro)
+    metros_ref = _parse_referencia_metros(referencia_metros)
+    forzar_manual = _parse_forzar_escala_manual(forzar_escala_manual)
+
+    try:
+        resultados = procesar_plano_ia(
+            process.original_file,
+            metros_ref,
+            sistema,
+            process.tipo_plano,
+            altura_muro=altura,
+            forzar_escala_manual=forzar_manual,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al reprocesar la imagen.",
+        ) from exc
+
+    process.audit_image_base64 = resultados["imagen"]
+    process.items = resultados["items"]
+    process.total = float(resultados.get("total") or 0)
+    process.escala_detectada = resultados.get("escala_detectada")
+    process.result_meta = _result_meta_from_ia(resultados, sistema, altura)
+    db.add(process)
+    db.commit()
+    db.refresh(process)
+    return serialize_process(process)
+
+
 @app.post("/calcular")
 @app.post("/api/calcular")
 async def calcular_demo(
     request: Request,
     file: UploadFile = File(...),
-    referencia_metros: float = Form(...),
+    referencia_metros: str = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
-    altura_muro: float = Form(2.60),
+    altura_muro: str = Form("2.60"),
     forzar_escala_manual: str = Form("0"),
 ):
     contenido = await file.read()
@@ -1016,11 +1101,12 @@ async def calcular_demo(
     check_demo_rate_limit(request)
     sistema = _parse_sistema_muro(sistema_muro)
     altura = _parse_altura_muro(altura_muro)
+    metros_ref = _parse_referencia_metros(referencia_metros)
     forzar_manual = _parse_forzar_escala_manual(forzar_escala_manual)
     try:
         return procesar_plano_ia(
             contenido,
-            referencia_metros,
+            metros_ref,
             sistema,
             tipo_plano,
             altura_muro=altura,
