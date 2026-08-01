@@ -1731,20 +1731,13 @@ function App() {
             </div>
           ) : (
             <>
-            <div className="panel-header panel-header--split">
-              <div>
-                <span className="eyebrow">Panel de computo</span>
-                <h2>{activeProject?.name || 'Obra'}</h2>
-                <p>{activeProject?.client || activeProject?.address || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
-              </div>
-              <div className="panel-header-aside">
-                <ScalePanel
-                  ultimo={lastProcess}
-                  onAplicarManual={
-                    canEdit && ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null
-                  }
-                />
-                {canEdit && <ComputeOptionsPanel />}
+            <div className="panel-header panel-header--obra">
+              <div className="panel-header-main">
+                <div>
+                  <span className="eyebrow">Panel de computo</span>
+                  <h2>{activeProject?.name || 'Obra'}</h2>
+                  <p>{activeProject?.client || activeProject?.address || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
+                </div>
                 <div className="panel-toolbar">
                   <button className="nav-btn" disabled={processes.length === 0} onClick={exportarCsv}>
                     Exportar CSV
@@ -1766,6 +1759,15 @@ function App() {
                     </button>
                   )}
                 </div>
+              </div>
+              <div className="panel-controls">
+                <ScalePanel
+                  ultimo={lastProcess}
+                  onAplicarManual={
+                    canEdit && ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null
+                  }
+                />
+                {canEdit && <ComputeOptionsPanel />}
               </div>
             </div>
 
