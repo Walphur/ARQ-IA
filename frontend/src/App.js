@@ -267,7 +267,12 @@ function App() {
     .filter((process) => process.tipo !== 'terreno')
     .reduce((acc, process) => acc + Number(process.total || 0), 0);
   const lastProcess = processes[0];
-  const planStatus = me?.studio?.plan_status === 'active' ? 'Plan activo' : 'Plan inicial';
+  const planStatus =
+    me?.studio?.plan_status === 'active'
+      ? 'Plan activo (MP)'
+      : me?.studio?.plan_status === 'paused'
+        ? 'Plan pausado'
+        : 'Plan inicial';
 
   const refreshMe = async () => {
     const res = await api.get('/me');
@@ -589,7 +594,21 @@ function App() {
       const res = await api.post('/billing/create-checkout-session');
       window.location.href = res.data.url;
     } catch (err) {
-      setError(getErrorMessage(err, 'Stripe todavia no esta configurado.'));
+      setError(getErrorMessage(err, 'Mercado Pago todavia no esta configurado.'));
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const cancelarSuscripcion = async () => {
+    if (!window.confirm('Cancelar la suscripcion de Mercado Pago de este estudio?')) return;
+    setLoading('billing-cancel');
+    setError('');
+    try {
+      await api.post('/billing/cancel');
+      await refreshMe();
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo cancelar la suscripcion.'));
     } finally {
       setLoading('');
     }
@@ -1158,9 +1177,25 @@ function App() {
             {mostrarGuia ? 'Cerrar guia' : 'Guia'}
           </button>
           {canManageBilling && (
-            <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
-              Suscripcion
-            </button>
+            me?.studio?.has_subscription || me?.studio?.plan_status === 'active' ? (
+              <button
+                className="nav-btn"
+                onClick={cancelarSuscripcion}
+                disabled={loading === 'billing-cancel'}
+                title="Cancelar cobro recurrente en Mercado Pago"
+              >
+                {loading === 'billing-cancel' ? 'Cancelando...' : 'Cancelar plan'}
+              </button>
+            ) : (
+              <button
+                className="nav-btn"
+                onClick={abrirCheckout}
+                disabled={loading === 'billing'}
+                title="Pagar con Mercado Pago (ARS)"
+              >
+                {loading === 'billing' ? 'Redirigiendo...' : 'Plan con Mercado Pago'}
+              </button>
+            )
           )}
           {SUPPORT_WA_HREF && (
             <a className="nav-btn" href={SUPPORT_WA_HREF} target="_blank" rel="noreferrer">
