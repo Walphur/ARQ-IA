@@ -56,7 +56,8 @@ services:
     staticPublishPath: build
     envVars:
       - key: REACT_APP_API_URL
-        value: https://api.arq-ia.pro
+        # Host onrender (failover automatico a api.arq-ia.pro en el frontend)
+        value: https://arq-ia-backend.onrender.com
     routes:
       - type: rewrite
         source: /*

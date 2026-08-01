@@ -64,7 +64,12 @@ DEMO_RATE_MAX = int(os.getenv("DEMO_RATE_MAX", "30"))
 if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
     print("[WARN] DATABASE_URL no configurada en Render: usando SQLite efimera. Configura PostgreSQL para persistencia.")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+_engine_kwargs = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("postgresql"):
+    _engine_kwargs["connect_args"] = {"connect_timeout": 10}
+    _engine_kwargs["pool_size"] = 5
+    _engine_kwargs["max_overflow"] = 5
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 JsonColumn = JSONB if DATABASE_URL.startswith("postgresql") else JSON
@@ -279,10 +284,14 @@ def get_db():
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
-    ensure_process_result_meta_column()
-    ensure_studio_mp_preapproval_column()
-    ensure_studio_usage_columns()
+    """Migraciones best-effort: no tumbar el proceso si la DB tarda o falla un ALTER."""
+    try:
+        Base.metadata.create_all(bind=engine)
+        ensure_process_result_meta_column()
+        ensure_studio_mp_preapproval_column()
+        ensure_studio_usage_columns()
+    except Exception as exc:
+        print(f"[WARN] startup schema/migracion: {exc}")
 
 
 def ensure_process_result_meta_column():
@@ -328,26 +337,31 @@ def ensure_studio_usage_columns():
             else:
                 conn.execute(text("ALTER TABLE studios ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0"))
 
-    # Backfill una sola vez: estudios sin mes cargado toman el conteo actual de procesos del mes.
-    key = datetime.now(timezone.utc).strftime("%Y-%m")
-    start = month_start()
-    db = SessionLocal()
-    try:
-        studios = db.query(Studio).filter(Studio.usage_month_key.is_(None)).all()
-        for studio in studios:
-            used = (
-                db.query(Process)
-                .join(Project)
-                .filter(Project.studio_id == studio.id, Process.created_at >= start)
-                .count()
-            )
-            studio.usage_month_key = key
-            studio.usage_count = int(used)
-            db.add(studio)
-        if studios:
-            db.commit()
-    finally:
-        db.close()
+    # Backfill en background para no demorar el healthcheck de Render.
+    def _backfill():
+        key = datetime.now(timezone.utc).strftime("%Y-%m")
+        start = month_start()
+        db = SessionLocal()
+        try:
+            studios = db.query(Studio).filter(Studio.usage_month_key.is_(None)).all()
+            for studio in studios:
+                used = (
+                    db.query(Process)
+                    .join(Project)
+                    .filter(Project.studio_id == studio.id, Process.created_at >= start)
+                    .count()
+                )
+                studio.usage_month_key = key
+                studio.usage_count = int(used)
+                db.add(studio)
+            if studios:
+                db.commit()
+        except Exception as exc:
+            print(f"[WARN] usage backfill: {exc}")
+        finally:
+            db.close()
+
+    threading.Thread(target=_backfill, name="usage-backfill", daemon=True).start()
 
 
 def hash_password(password: str) -> str:
