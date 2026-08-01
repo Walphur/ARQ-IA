@@ -1220,6 +1220,16 @@ function App() {
               onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
             />
           )}
+          {authMode === 'login' && (
+            <button
+              type="button"
+              className="link-btn"
+              disabled={loading === 'auth'}
+              onClick={() => { setAuthMode('forgot'); setError(''); setAuthNotice(''); }}
+            >
+              ¿Olvidaste tu clave?
+            </button>
+          )}
           {authNotice && <div className="auth-help" style={{ color: '#d4af37' }}>{authNotice}</div>}
           {error && <div className="error-box">{error}</div>}
           <button className="primary-btn" disabled={loading === 'auth'}>
@@ -1233,16 +1243,6 @@ function App() {
                     ? 'Enviar enlace'
                     : 'Guardar clave'}
           </button>
-          {authMode === 'login' && (
-            <button
-              type="button"
-              className="ghost-btn"
-              disabled={loading === 'auth'}
-              onClick={() => { setAuthMode('forgot'); setError(''); setAuthNotice(''); }}
-            >
-              Olvide mi clave
-            </button>
-          )}
           {(authMode === 'forgot' || authMode === 'reset') && (
             <button
               type="button"
