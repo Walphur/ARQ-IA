@@ -620,6 +620,31 @@ def create_project(data: ProjectIn, user: User = Depends(current_user), db: Sess
     return {"id": project.id, "name": project.name, "client": project.client, "address": project.address}
 
 
+@app.patch("/projects/{project_id}")
+@app.put("/projects/{project_id}")
+@app.patch("/api/projects/{project_id}")
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: int, data: ProjectIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
+    project = db.get(Project, project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Obra no encontrada.")
+    name = (data.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="El nombre de la obra es obligatorio.")
+    project.name = name
+    project.client = (data.client or "").strip() or None
+    project.address = (data.address or "").strip() or None
+    db.commit()
+    db.refresh(project)
+    return {
+        "id": project.id,
+        "name": project.name,
+        "client": project.client,
+        "address": project.address,
+    }
+
+
 @app.get("/projects/{project_id}/processes")
 def list_processes(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     project = db.get(Project, project_id)

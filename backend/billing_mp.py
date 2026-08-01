@@ -130,6 +130,8 @@ def verify_webhook_signature(
 
 
 def billing_public_info() -> dict[str, Any]:
+    free_limit = int(os.getenv("FREE_MONTHLY_LIMIT", "20"))
+    paid_limit = int(os.getenv("PAID_MONTHLY_LIMIT", "500"))
     return {
         "provider": "mercadopago",
         "configured": mp_configured(),
@@ -137,4 +139,6 @@ def billing_public_info() -> dict[str, Any]:
         "amount": MP_AMOUNT_ARS if not MP_PREAPPROVAL_PLAN_ID else None,
         "reason": MP_REASON,
         "has_plan_id": bool(MP_PREAPPROVAL_PLAN_ID),
+        "free_monthly_limit": free_limit,
+        "paid_monthly_limit": paid_limit,
     }

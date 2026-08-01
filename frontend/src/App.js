@@ -151,7 +151,7 @@ const PALETA_GUIA = [
   { id: 'techo', nombre: 'Techos y losas', muestras: ['#b388ff'], texto: 'Violeta o fluor violeta para losas o cubiertas.' },
 ];
 
-function ColorGuidePanel({ onClose }) {
+function useEscapeClose(onClose) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') onClose();
@@ -164,6 +164,10 @@ function ColorGuidePanel({ onClose }) {
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
+}
+
+function ColorGuidePanel({ onClose }) {
+  useEscapeClose(onClose);
 
   return (
     <div className="color-guide-overlay" onClick={onClose} role="presentation">
@@ -213,6 +217,153 @@ function ColorGuidePanel({ onClose }) {
   );
 }
 
+function PlansPanel({ onClose, billing, onSubscribe, canSubscribe, loadingBilling }) {
+  useEscapeClose(onClose);
+  const freeLimit = billing?.free_monthly_limit ?? 20;
+  const paidLimit = billing?.paid_monthly_limit ?? 500;
+  const amount = billing?.amount;
+  const currency = billing?.currency || 'ARS';
+
+  return (
+    <div className="color-guide-overlay" onClick={onClose} role="presentation">
+      <div
+        className="color-guide-sheet plans-sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="planes-titulo"
+      >
+        <header className="color-guide-head">
+          <div>
+            <span className="eyebrow">Planes</span>
+            <h2 id="planes-titulo">Free vs Plan Pro</h2>
+            <p className="color-guide-lead">
+              Empeza gratis. Cuando el estudio crece, activa el plan con Mercado Pago en pesos argentinos.
+            </p>
+          </div>
+          <button type="button" className="color-guide-close nav-btn" onClick={onClose}>
+            Cerrar
+          </button>
+        </header>
+        <div className="plans-grid">
+          <article className="plan-card">
+            <span className="eyebrow">Inicial</span>
+            <h3>Free</h3>
+            <p className="plan-price">$ 0 <small>/ mes</small></p>
+            <ul>
+              <li>Hasta {freeLimit} planos por mes</li>
+              <li>Demo publica + obras guardadas</li>
+              <li>Export CSV y PDF</li>
+              <li>Invitaciones al equipo</li>
+            </ul>
+          </article>
+          <article className="plan-card plan-card--pro">
+            <span className="eyebrow">Recomendado</span>
+            <h3>Pro</h3>
+            <p className="plan-price">
+              {amount != null ? formatoMoneda(amount) : 'Consultar'}{' '}
+              <small>/ mes {currency}</small>
+            </p>
+            <ul>
+              <li>Hasta {paidLimit} planos por mes</li>
+              <li>Mismos modulos y auditoria visual</li>
+              <li>Cobro local con Mercado Pago</li>
+              <li>Prioridad para el estudio en produccion</li>
+            </ul>
+            {canSubscribe && (
+              <button type="button" className="primary-btn" disabled={loadingBilling} onClick={onSubscribe}>
+                {loadingBilling ? 'Redirigiendo...' : 'Activar con Mercado Pago'}
+              </button>
+            )}
+          </article>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComparePanel({ left, right, onClose }) {
+  useEscapeClose(onClose);
+  const leftItems = left?.items || [];
+  const rightItems = right?.items || [];
+  const names = Array.from(new Set([...leftItems.map((i) => i.nom), ...rightItems.map((i) => i.nom)]));
+  const mapVal = (items, nom) => {
+    const hit = items.find((i) => i.nom === nom);
+    return hit ? hit.val : null;
+  };
+
+  return (
+    <div className="color-guide-overlay" onClick={onClose} role="presentation">
+      <div
+        className="color-guide-sheet compare-sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compare-titulo"
+      >
+        <header className="color-guide-head">
+          <div>
+            <span className="eyebrow">Comparacion</span>
+            <h2 id="compare-titulo">Dos analisis lado a lado</h2>
+            <p className="color-guide-lead">
+              {left?.filename} ({left?.tipo}) vs {right?.filename} ({right?.tipo})
+            </p>
+          </div>
+          <button type="button" className="color-guide-close nav-btn" onClick={onClose}>
+            Cerrar
+          </button>
+        </header>
+        <div className="compare-totals">
+          <div>
+            <span>Total A</span>
+            <strong>{left?.tipo === 'terreno' ? '—' : formatoMoneda(left?.total)}</strong>
+          </div>
+          <div>
+            <span>Total B</span>
+            <strong>{right?.tipo === 'terreno' ? '—' : formatoMoneda(right?.total)}</strong>
+          </div>
+          <div>
+            <span>Diferencia</span>
+            <strong>
+              {left?.tipo === 'terreno' || right?.tipo === 'terreno'
+                ? '—'
+                : formatoMoneda(Number(right?.total || 0) - Number(left?.total || 0))}
+            </strong>
+          </div>
+        </div>
+        <div className="compare-table-wrap">
+          <table className="compare-table">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Analisis A</th>
+                <th>Analisis B</th>
+              </tr>
+            </thead>
+            <tbody>
+              {names.map((nom) => {
+                const a = mapVal(leftItems, nom);
+                const b = mapVal(rightItems, nom);
+                return (
+                  <tr key={nom}>
+                    <td>{nom}</td>
+                    <td>{a == null ? '—' : left?.tipo === 'terreno' ? String(a) : formatoMoneda(a)}</td>
+                    <td>{b == null ? '—' : right?.tipo === 'terreno' ? String(b) : formatoMoneda(b)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="compare-images">
+          {left?.imagen && <img src={`data:image/png;base64,${left.imagen}`} alt="Auditoria A" />}
+          {right?.imagen && <img src={`data:image/png;base64,${right.imagen}`} alt="Auditoria B" />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('arqia_token') || '');
   const [authMode, setAuthMode] = useState('login'); // login | register | forgot | reset
@@ -234,8 +385,14 @@ function App() {
   const [sistemaMuro, setSistemaMuro] = useState('ladrillo_hueco_12');
   const [alturaMuro, setAlturaMuro] = useState(2.6);
   const [mostrarGuia, setMostrarGuia] = useState(false);
+  const [mostrarPlanes, setMostrarPlanes] = useState(false);
+  const [editProjectForm, setEditProjectForm] = useState({ name: '', client: '', address: '' });
+  const [compareIds, setCompareIds] = useState([]);
+  const [mostrarCompare, setMostrarCompare] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
+  const [billingPublic, setBillingPublic] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [demoRuns, setDemoRuns] = useState([]);
   const [paletteDescargada, setPaletteDescargada] = useState(() => localStorage.getItem('arqia_palette_ok') === '1');
@@ -302,7 +459,27 @@ function App() {
 
   useEffect(() => {
     fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => setPreciosInfo(null));
+    getPublicWithFallback('/billing/info')
+      .then((r) => setBillingPublic(r.data))
+      .catch(() => setBillingPublic(null));
   }, [token, demoMode]);
+
+  useEffect(() => {
+    if (!activeProject) {
+      setEditProjectForm({ name: '', client: '', address: '' });
+      return;
+    }
+    setEditProjectForm({
+      name: activeProject.name || '',
+      client: activeProject.client || '',
+      address: activeProject.address || '',
+    });
+  }, [activeProject]);
+
+  useEffect(() => {
+    setCompareIds([]);
+    setMostrarCompare(false);
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (token) {
@@ -562,6 +739,29 @@ function App() {
     } finally {
       setLoading('');
     }
+  };
+
+  const updateProject = async (event) => {
+    event.preventDefault();
+    if (!activeProjectId || !editProjectForm.name.trim()) return;
+    setLoading('project-edit');
+    setError('');
+    try {
+      await api.patch(`/projects/${activeProjectId}`, editProjectForm);
+      await refreshProjects();
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo actualizar la obra.'));
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const toggleCompare = (processId) => {
+    setCompareIds((prev) => {
+      if (prev.includes(processId)) return prev.filter((id) => id !== processId);
+      if (prev.length >= 2) return [prev[1], processId];
+      return [...prev, processId];
+    });
   };
 
   const appendCalculoFields = (formData, tipo) => {
@@ -935,6 +1135,9 @@ function App() {
             <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
               {mostrarGuia ? 'Cerrar guia' : 'Guia de colores'}
             </button>
+            <button type="button" className="nav-btn" onClick={() => setMostrarPlanes(true)}>
+              Planes
+            </button>
             <button
               type="button"
               className="nav-btn"
@@ -955,6 +1158,13 @@ function App() {
         <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando con la API...'}</div>
 
         {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
+        {mostrarPlanes && (
+          <PlansPanel
+            onClose={() => setMostrarPlanes(false)}
+            billing={billingPublic || {}}
+            canSubscribe={false}
+          />
+        )}
 
         <main className="workspace demo-workspace">
           <aside className="sidebar demo-sidebar">
@@ -1249,6 +1459,18 @@ function App() {
                     ? 'Enviar enlace'
                     : 'Guardar clave'}
           </button>
+          {(authMode === 'login' || authMode === 'register') && (
+            <button type="button" className="link-btn" onClick={() => setMostrarPlanes(true)}>
+              Ver planes Free vs Pro
+            </button>
+          )}
+          {mostrarPlanes && !token && (
+            <PlansPanel
+              onClose={() => setMostrarPlanes(false)}
+              billing={billingPublic || {}}
+              canSubscribe={false}
+            />
+          )}
           {(authMode === 'forgot' || authMode === 'reset') && (
             <button
               type="button"
@@ -1286,6 +1508,9 @@ function App() {
   }
 
   const ultimoPlanoObra = activeProjectId ? lastUploadByProject[String(activeProjectId)] : null;
+  const compareLeft = processes.find((p) => p.id === compareIds[0]);
+  const compareRight = processes.find((p) => p.id === compareIds[1]);
+  const billingForPlans = billingPublic || me?.billing || {};
 
   return (
     <div className="App">
@@ -1297,7 +1522,16 @@ function App() {
             <p>{me?.studio?.name || 'Estudio'}</p>
           </div>
         </div>
-        <div className="top-actions">
+        <button
+          type="button"
+          className={`nav-btn mobile-menu-btn${mobileNavOpen ? ' nav-btn--active' : ''}`}
+          aria-expanded={mobileNavOpen}
+          aria-controls="top-actions-menu"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          {mobileNavOpen ? 'Cerrar' : 'Menu'}
+        </button>
+        <div id="top-actions-menu" className={`top-actions${mobileNavOpen ? ' is-open' : ''}`}>
           <div className="usage-pill">
             {me?.studio?.used_this_month || 0}/{me?.studio?.monthly_limit || 0} planos
           </div>
@@ -1308,8 +1542,11 @@ function App() {
           <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
             {mostrarGuia ? 'Cerrar guia' : 'Guia'}
           </button>
+          <button type="button" className={`nav-btn${mostrarPlanes ? ' nav-btn--active' : ''}`} onClick={() => setMostrarPlanes(true)}>
+            Planes
+          </button>
           {canManageBilling && (
-            me?.studio?.has_subscription || me?.studio?.plan_status === 'active' ? (
+            (me?.studio?.has_subscription || me?.studio?.plan_status === 'active') ? (
               <button
                 className="nav-btn"
                 onClick={cancelarSuscripcion}
@@ -1340,6 +1577,21 @@ function App() {
       <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
 
       {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
+      {mostrarPlanes && (
+        <PlansPanel
+          onClose={() => setMostrarPlanes(false)}
+          billing={billingForPlans}
+          canSubscribe={canManageBilling && me?.studio?.plan_status !== 'active'}
+          loadingBilling={loading === 'billing'}
+          onSubscribe={() => {
+            setMostrarPlanes(false);
+            abrirCheckout();
+          }}
+        />
+      )}
+      {mostrarCompare && compareLeft && compareRight && (
+        <ComparePanel left={compareLeft} right={compareRight} onClose={() => setMostrarCompare(false)} />
+      )}
 
       <main className="workspace">
         <aside className="sidebar">
@@ -1469,6 +1721,14 @@ function App() {
                   <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>
                     Exportar PDF
                   </button>
+                  <button
+                    className="nav-btn"
+                    disabled={compareIds.length !== 2}
+                    onClick={() => setMostrarCompare(true)}
+                    title="Elegi 2 analisis del historial"
+                  >
+                    Comparar ({compareIds.length}/2)
+                  </button>
                   {canEdit && (
                     <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
                       Eliminar obra
@@ -1479,6 +1739,35 @@ function App() {
             </div>
 
           {error && <div className="error-box">{error}</div>}
+
+          {canEdit && activeProjectId && (
+            <form className="edit-project-form" onSubmit={updateProject}>
+              <div className="edit-project-head">
+                <span className="eyebrow">Obra seleccionada</span>
+                <h3>Editar datos</h3>
+              </div>
+              <div className="edit-project-grid">
+                <input
+                  placeholder="Nombre de obra"
+                  value={editProjectForm.name}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, name: e.target.value })}
+                />
+                <input
+                  placeholder="Cliente"
+                  value={editProjectForm.client}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, client: e.target.value })}
+                />
+                <input
+                  placeholder="Direccion"
+                  value={editProjectForm.address}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, address: e.target.value })}
+                />
+                <button className="primary-btn" disabled={loading === 'project-edit'}>
+                  {loading === 'project-edit' ? 'Guardando...' : 'Guardar cambios'}
+                </button>
+              </div>
+            </form>
+          )}
 
           <div className="kpi-grid">
             <div className="kpi-card">
@@ -1619,11 +1908,22 @@ function App() {
               </div>
 
               <div className="history-list">
-                <h2>Historial guardado</h2>
+                <div className="history-list-head">
+                  <h2>Historial guardado</h2>
+                  <small className="auth-help">Marca hasta 2 analisis y usa Comparar.</small>
+                </div>
                 {processes.map((process) => (
-                  <article className="history-card" key={process.id}>
+                  <article className={`history-card${compareIds.includes(process.id) ? ' is-compare' : ''}`} key={process.id}>
                     <div className="history-meta">
                       <div>
+                        <label className="compare-check">
+                          <input
+                            type="checkbox"
+                            checked={compareIds.includes(process.id)}
+                            onChange={() => toggleCompare(process.id)}
+                          />
+                          Comparar
+                        </label>
                         <h3>{process.filename}</h3>
                         <p>{process.tipo} - {new Date(process.created_at).toLocaleString('es-AR')}</p>
                         {process.meta?.escala_modo && (

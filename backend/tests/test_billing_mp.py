@@ -48,3 +48,11 @@ def test_mp_configured_requires_token(monkeypatch):
 def test_sanitize_back_url_strips_query():
     assert billing_mp._sanitize_back_url("https://arq-ia.pro?billing=success") == "https://arq-ia.pro/"
     assert billing_mp._sanitize_back_url("arq-ia.pro") == "https://arq-ia.pro/"
+
+
+def test_billing_info_incluye_limites(monkeypatch):
+    monkeypatch.setenv("FREE_MONTHLY_LIMIT", "20")
+    monkeypatch.setenv("PAID_MONTHLY_LIMIT", "500")
+    info = billing_mp.billing_public_info()
+    assert info["free_monthly_limit"] == 20
+    assert info["paid_monthly_limit"] == 500
