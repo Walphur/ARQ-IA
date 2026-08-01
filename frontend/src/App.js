@@ -138,9 +138,22 @@ const getPublicWithFallback = async (pathWithQuery) => {
   }
 };
 
+const parseMetrosInput = (raw) => {
+  if (raw == null || raw === '') return NaN;
+  const s = String(raw).trim().replace(/\s/g, '').replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+};
+
 const getErrorMessage = (err, fallback, authMode = null) => {
   const status = err?.response?.status;
-  const detail = String(err?.response?.data?.detail || '').trim();
+  const detailRaw = err?.response?.data?.detail;
+  const detail = Array.isArray(detailRaw)
+    ? detailRaw.map((d) => d?.msg || JSON.stringify(d)).join(' ')
+    : String(detailRaw || '').trim();
+  if (status === 422) {
+    return detail || 'Revisa los numeros (ej. 7,3 o 7.3) e intenta de nuevo.';
+  }
   if (status === 429 && detail) return detail;
   if (status === 413 && detail) return detail;
   if (status === 413) return 'El archivo es demasiado grande. Comprimí la imagen o subi menor resolucion.';
@@ -793,10 +806,12 @@ function App() {
   };
 
   const appendCalculoFields = (formData, tipo, { forzarEscalaManual = false } = {}) => {
-    formData.append('referencia_metros', referencia);
+    const metros = parseMetrosInput(referencia);
+    const altura = parseMetrosInput(alturaMuro);
+    formData.append('referencia_metros', Number.isFinite(metros) ? String(metros) : String(referencia).replace(',', '.'));
     formData.append('tipo_plano', tipo);
     formData.append('sistema_muro', sistemaMuro);
-    formData.append('altura_muro', String(alturaMuro));
+    formData.append('altura_muro', Number.isFinite(altura) ? String(altura) : String(alturaMuro).replace(',', '.'));
     formData.append('forzar_escala_manual', forzarEscalaManual ? '1' : '0');
   };
 
@@ -834,7 +849,7 @@ function App() {
         ].slice(0, 6),
       );
       setLastDemoUpload({ file: archivo, tipo: data.tipo || tipo });
-      if (data.metros_referencia_usados != null && !opts.forzarEscalaManual) {
+      if (data.metros_referencia_usados != null) {
         const m = Number(data.metros_referencia_usados);
         if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
       }
@@ -882,6 +897,11 @@ function App() {
       setError('Este modulo es Plan Pro. Activa la suscripcion con Mercado Pago para usarlo.');
       return;
     }
+    const metrosCheck = parseMetrosInput(referencia);
+    if (!Number.isFinite(metrosCheck) || metrosCheck <= 0) {
+      setError('Ingresa los metros de la linea verde (ej. 7,3 o 7.3).');
+      return;
+    }
     const formData = new FormData();
     formData.append('file', archivo);
     appendCalculoFields(formData, tipo, opts);
@@ -892,7 +912,7 @@ function App() {
       const res = await api.post(`/projects/${activeProjectId}/calcular`, formData);
       setLastUploadByProject((m) => ({ ...m, [String(activeProjectId)]: { file: archivo, tipo } }));
       const metros = res?.data?.meta?.metros_referencia_usados;
-      if (metros != null && !opts.forzarEscalaManual) {
+      if (metros != null) {
         const m = Number(metros);
         if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
       }
@@ -903,6 +923,50 @@ function App() {
     } finally {
       setLoading('');
     }
+  };
+
+  const recalcularProcesoGuardado = async (processId, opts = {}) => {
+    if (!activeProjectId || !processId) return;
+    const metrosCheck = parseMetrosInput(referencia);
+    if (!Number.isFinite(metrosCheck) || metrosCheck <= 0) {
+      setError('Ingresa los metros de la linea verde (ej. 7,3 o 7.3).');
+      return;
+    }
+    const formData = new FormData();
+    appendCalculoFields(formData, 'muros', { forzarEscalaManual: opts.forzarEscalaManual !== false });
+    // tipo_plano del form se ignora: el backend usa el del proceso guardado
+    setLoading('escala');
+    setError('');
+    try {
+      const res = await api.post(
+        `/projects/${activeProjectId}/processes/${processId}/recalcular`,
+        formData,
+      );
+      const metros = res?.data?.meta?.metros_referencia_usados;
+      if (metros != null) {
+        const m = Number(metros);
+        if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
+      }
+      await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
+      fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo aplicar la escala al analisis guardado.'));
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const aplicarEscalaManualObra = async () => {
+    if (lastProcess?.id) {
+      await recalcularProcesoGuardado(lastProcess.id, { forzarEscalaManual: true });
+      return;
+    }
+    const cached = activeProjectId ? lastUploadByProject[String(activeProjectId)] : null;
+    if (cached?.file) {
+      await subirPlano(cached.file, cached.tipo, { forzarEscalaManual: true });
+      return;
+    }
+    setError('Subi un plano primero; despues podes corregir la escala con Aplicar escala.');
   };
 
   const abrirCheckout = async () => {
@@ -1046,7 +1110,7 @@ function App() {
     setDemoRuns((prev) => prev.filter((r) => r.id !== runId));
   };
 
-  const ScalePanel = ({ ultimo, onAplicarManual }) => {
+  const ScalePanel = ({ ultimo, onAplicarManual, aplicando = false }) => {
     const modo = ultimo?.meta?.escala_modo;
     const ocrRaw = ultimo?.escala_detectada;
     const ocrNum = ocrRaw != null && ocrRaw !== '' && !Number.isNaN(Number(ocrRaw)) ? Number(ocrRaw) : null;
@@ -1055,12 +1119,13 @@ function App() {
       aplicadoRaw != null && aplicadoRaw !== '' && !Number.isNaN(Number(aplicadoRaw)) ? Number(aplicadoRaw) : null;
     if (aplicadoNum == null && ultimo && ocrNum != null) aplicadoNum = ocrNum;
     if (aplicadoNum == null && ultimo) {
-      const r = Number(referencia);
+      const r = parseMetrosInput(referencia);
       if (!Number.isNaN(r) && r > 0) aplicadoNum = r;
     }
 
     const tieneDato = aplicadoNum != null && !Number.isNaN(aplicadoNum);
     const valorTexto = tieneDato ? `${aplicadoNum.toFixed(2)} m` : '—';
+    const puedeAplicar = typeof onAplicarManual === 'function';
 
     return (
       <div className="scale-panel">
@@ -1075,30 +1140,38 @@ function App() {
               className="scale-manual-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (onAplicarManual) onAplicarManual();
+                if (puedeAplicar && !aplicando) onAplicarManual();
               }}
             >
               <div className="scale-input-wrap">
                 <input
                   id="ref-metros"
-                  type="number"
-                  min="0.1"
-                  step="0.1"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  placeholder="7,30"
                   value={referencia}
                   onChange={(e) => setReferencia(e.target.value)}
                 />
                 <span className="scale-suffix">m</span>
               </div>
-              {onAplicarManual && (
-                <div className="scale-apply-row">
-                  <button type="submit" className="scale-apply-btn nav-btn">
-                    Aplicar escala
-                  </button>
-                  <span className="scale-apply-hint">Enter reaplica el ultimo plano subido.</span>
-                </div>
-              )}
+              <div className="scale-apply-row">
+                <button
+                  type="submit"
+                  className="scale-apply-btn nav-btn"
+                  disabled={!puedeAplicar || aplicando}
+                  title={puedeAplicar ? 'Recalcula el ultimo analisis con esta escala' : 'Subi un plano primero'}
+                >
+                  {aplicando ? 'Aplicando…' : 'Aplicar escala'}
+                </button>
+                <span className="scale-apply-hint">
+                  {puedeAplicar
+                    ? 'Pisa el OCR y recalcula el ultimo analisis guardado.'
+                    : 'Subi un plano para habilitar Aplicar escala.'}
+                </span>
+              </div>
             </form>
-            <p className="scale-hint">Metros reales del segmento verde. Con Aplicar escala, este valor pisa al OCR.</p>
+            <p className="scale-hint">Metros reales del segmento verde (acepta 7,3 o 7.3).</p>
           </div>
           <div className={`scale-field scale-readout${!tieneDato ? ' is-empty' : ''}`}>
             <span className="scale-readout-label">Escala aplicada al calculo</span>
@@ -1129,7 +1202,7 @@ function App() {
               </p>
             )}
             <p className="scale-hint">
-              Si el numero del plano (ej. 7,30) no coincide, escribi 7.3 aca y pulsa Aplicar escala.
+              Si el OCR fallo (ej. leyo 4.00 en vez de 7,30), escribi 7,3 y pulsa Aplicar escala.
             </p>
           </div>
         </div>
@@ -1155,10 +1228,10 @@ function App() {
           <span>Altura de muro (m)</span>
           <div className="scale-input-wrap">
             <input
-              type="number"
-              min="1.8"
-              max="6"
-              step="0.1"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="2,60"
               value={alturaMuro}
               onChange={(e) => setAlturaMuro(e.target.value)}
             />
@@ -1292,6 +1365,7 @@ function App() {
                     ? () => subirPlanoDemo(lastDemoUpload.file, lastDemoUpload.tipo, { forzarEscalaManual: true })
                     : null
                 }
+                aplicando={loading === 'escala' || (!!lastDemoUpload && loading === lastDemoUpload.tipo)}
               />
               <ComputeOptionsPanel />
             </div>
@@ -1812,11 +1886,8 @@ function App() {
               <div className="panel-controls">
                 <ScalePanel
                   ultimo={lastProcess}
-                  onAplicarManual={
-                    canEdit && ultimoPlanoObra
-                      ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo, { forzarEscalaManual: true })
-                      : null
-                  }
+                  onAplicarManual={canEdit ? aplicarEscalaManualObra : null}
+                  aplicando={loading === 'escala' || loading === (ultimoPlanoObra?.tipo || '')}
                 />
                 {canEdit && <ComputeOptionsPanel />}
               </div>
