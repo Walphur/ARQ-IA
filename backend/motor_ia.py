@@ -112,45 +112,233 @@ def obtener_precios_en_vivo():
 def _li(nom, val, origen):
     return {"nom": nom, "val": val, "origen": origen}
 
-def _primer_float_en_texto(texto: str):
-    if not texto:
+
+def _parse_float_cota(token: str):
+    if not token:
         return None
-    numeros = re.findall(r"\d+[.,]?\d*", texto)
-    if not numeros:
+    t = token.strip().replace(" ", "").replace(",", ".")
+    if t.count(".") > 1:
+        # p.ej. 1.234.56 -> invalido para cota de metros
         return None
     try:
-        return float(numeros[0].replace(",", "."))
+        return float(t)
     except ValueError:
         return None
 
 
-def _ocr_float_desde_gris(prep_gray):
-    """Devuelve el primer numero razonable (metros de cota) leido por Tesseract."""
+def _floats_en_texto(texto: str):
+    """Extrae numeros de cota (7,30 / 7.30). Evita basura tipo 7,350 -> 7.35."""
+    if not texto:
+        return []
+    out = []
+    spanned = []
+
+    def _add(raw, start, end):
+        v = _parse_float_cota(raw)
+        if v is None or not (0.05 < v < 500):
+            return
+        for a, b in spanned:
+            if not (end <= a or start >= b):
+                return
+        spanned.append((start, end))
+        out.append(v)
+
+    # Primero cotas con 1-2 decimales bien cerradas (no digitos pegados despues)
+    for m in re.finditer(r"(?<!\d)\d{1,3}[.,]\d{1,2}(?!\d)", texto):
+        _add(m.group(0), m.start(), m.end())
+    # OCR a veces agrega un digito fantasma: "7,350" a partir de "7,30"
+    for m in re.finditer(r"(?<!\d)(\d{1,3})[.,](\d{3,4})(?!\d)", texto):
+        enteros, decs = m.group(1), m.group(2)
+        _add(f"{enteros}.{decs[:2]}", m.start(), m.end())
+        if len(decs) >= 3:
+            # variante descartando el digito del medio (ruido tipico de ticks)
+            _add(f"{enteros}.{decs[0]}{decs[2]}", m.start(), m.end())
+    # Enteros sueltos (ticks / ruido); score mas bajo luego
+    for m in re.finditer(r"(?<!\d)\d{1,3}(?!\d)", texto):
+        _add(m.group(0), m.start(), m.end())
+    return out
+
+
+def _primer_float_en_texto(texto: str):
+    nums = _floats_en_texto(texto)
+    return nums[0] if nums else None
+
+
+def _score_candidato_escala(valor: float, *, debajo_verde: bool = False, conf: float = 0.0, votos: int = 1):
+    """Puntua lecturas tipicas de cota de escala en planos (ej. 7.30 m)."""
+    score = float(votos) * 1.5
+    if debajo_verde:
+        score += 4.0
+    if conf > 0:
+        score += min(conf, 95.0) / 25.0
+
+    entero = float(int(valor)) == valor
+    dec = round(valor - int(valor), 3)
+    if not entero:
+        score += 3.0
+    # Dos decimales tipicos de cota (7.30, 4.50)
+    if abs(round(dec, 2) - dec) < 1e-9 and not entero:
+        score += 2.0
+    # Anchos de referencia habituales en vivienda
+    if 1.0 <= valor <= 40.0:
+        score += 2.5
+    elif 0.5 <= valor < 1.0 or 40.0 < valor <= 80.0:
+        score += 0.5
+    else:
+        score -= 2.0
+    # Enteros sueltos (1, 4) suelen ser ruido de ticks / OCR
+    if entero and valor < 10:
+        score -= 2.5
+    return score
+
+
+def _upsample_gray(prep_gray):
     if prep_gray is None or prep_gray.size == 0:
         return None
     h, w = prep_gray.shape[:2]
     if h < 6 or w < 6:
         return None
-    scale = max(1.0, 140.0 / max(h, w))
+    scale = max(1.0, 160.0 / max(h, w))
     if scale > 1.02:
-        prep_gray = cv2.resize(prep_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        return cv2.resize(prep_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return prep_gray
 
-    def leer(img_gray):
-        for cfg in ("--psm 8", "--psm 7", "--psm 11", "--psm 6"):
-            t = pytesseract.image_to_string(img_gray, config=cfg)
-            v = _primer_float_en_texto(t)
-            if v is not None and 0.05 < v < 500:
-                return v
-        for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
-            r = cv2.rotate(img_gray, rot)
-            for cfg in ("--psm 8", "--psm 11", "--psm 7"):
+
+_OCR_CFGS = (
+    "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.,",
+    "--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789.,",
+    "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.,",
+    "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789.,",
+)
+
+
+def _recolectar_candidatos_ocr(prep_gray, *, debajo_verde_default=False):
+    """Devuelve lista de (valor, score_parcial) desde una imagen preparada."""
+    prep_gray = _upsample_gray(prep_gray)
+    if prep_gray is None:
+        return []
+
+    candidatos = []
+
+    def sumar_de_texto(texto, bonus=0.0, debajo=None):
+        for v in _floats_en_texto(texto):
+            sc = _score_candidato_escala(
+                v,
+                debajo_verde=debajo_verde_default if debajo is None else debajo,
+                conf=0,
+                votos=1,
+            ) + bonus
+            candidatos.append((v, sc))
+
+    for cfg in _OCR_CFGS:
+        try:
+            t = pytesseract.image_to_string(prep_gray, config=cfg)
+        except Exception:
+            continue
+        sumar_de_texto(t)
+
+    # Posicion: preferir texto debajo / centrado si Tesseract da cajas
+    try:
+        data = pytesseract.image_to_data(
+            prep_gray,
+            config="--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789.,",
+            output_type=pytesseract.Output.DICT,
+        )
+        n = len(data.get("text") or [])
+        gh, gw = prep_gray.shape[:2]
+        for i in range(n):
+            raw = (data["text"][i] or "").strip()
+            if not raw:
+                continue
+            try:
+                conf = float(data["conf"][i])
+            except (TypeError, ValueError):
+                conf = -1.0
+            if conf < 20:
+                continue
+            for v in _floats_en_texto(raw):
+                top = int(data["top"][i])
+                left = int(data["left"][i])
+                ww = int(data["width"][i])
+                hh = int(data["height"][i])
+                cy = top + hh / 2.0
+                cx = left + ww / 2.0
+                debajo = cy >= gh * 0.35
+                # Preferir cerca del centro horizontal (cota bajo la linea verde)
+                centrado = 1.0 - min(1.0, abs(cx - gw / 2.0) / max(gw / 2.0, 1.0))
+                sc = _score_candidato_escala(v, debajo_verde=debajo, conf=max(conf, 0), votos=1)
+                sc += centrado * 1.5
+                candidatos.append((v, sc))
+    except Exception:
+        pass
+
+    for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+        r = cv2.rotate(prep_gray, rot)
+        for cfg in _OCR_CFGS[:2]:
+            try:
                 t = pytesseract.image_to_string(r, config=cfg)
-                v = _primer_float_en_texto(t)
-                if v is not None and 0.05 < v < 500:
-                    return v
-        return None
+            except Exception:
+                continue
+            sumar_de_texto(t, bonus=-1.0)
 
-    return leer(prep_gray)
+    return candidatos
+
+
+def _elegir_mejor_escala(candidatos):
+    """Agrupa votos por valor redondeado y elige el de mayor score."""
+    if not candidatos:
+        return None
+    buckets = {}
+    for valor, score in candidatos:
+        key = round(float(valor), 2)
+        if key not in buckets:
+            buckets[key] = {"valor": float(valor), "score": 0.0, "votos": 0}
+        buckets[key]["score"] += float(score)
+        buckets[key]["votos"] += 1
+    best = max(buckets.values(), key=lambda b: (b["score"] + b["votos"] * 0.75, b["votos"]))
+    if best["votos"] < 1 or best["score"] < 2.0:
+        return None
+    return float(best["valor"])
+
+
+def _ocr_float_desde_gris(prep_gray):
+    """Compat: primer/mejor numero razonable leido por Tesseract en una prep."""
+    return _elegir_mejor_escala(_recolectar_candidatos_ocr(prep_gray, debajo_verde_default=False))
+
+
+def _preparaciones_ocr(roi_bgr):
+    preparaciones = []
+    if roi_bgr is None or roi_bgr.size == 0:
+        return preparaciones
+
+    hsv_roi = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+    gris = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+
+    # Texto negro tipico de cotas (prioridad alta)
+    media = float(np.mean(gris))
+    base = cv2.bitwise_not(gris) if media < 115 else gris
+    _, otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, otsu_inv = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    preparaciones.append(("otsu", otsu))
+    preparaciones.append(("otsu_inv", otsu_inv))
+
+    blur = cv2.GaussianBlur(gris, (3, 3), 0)
+    adapt = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 8)
+    preparaciones.append(("adapt", adapt))
+    preparaciones.append(("adapt_inv", cv2.bitwise_not(adapt)))
+
+    _, b0 = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    preparaciones.append(("b0", b0))
+    preparaciones.append(("b0_inv", cv2.bitwise_not(b0)))
+
+    # Amarillo solo como refuerzo (antes podia ganar con un falso 4.00)
+    mask_amarillo = cv2.inRange(hsv_roi, np.array([10, 55, 55]), np.array([50, 255, 255]))
+    k3 = np.ones((3, 3), np.uint8)
+    mask_amarillo = cv2.dilate(mask_amarillo, k3, iterations=2)
+    if np.sum(mask_amarillo) > 60:
+        preparaciones.append(("amarillo", cv2.bitwise_not(mask_amarillo)))
+
+    return preparaciones
 
 
 def extraer_numero_escala(img, mask_verde):
@@ -161,40 +349,32 @@ def extraer_numero_escala(img, mask_verde):
     c = max(contornos, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(c)
 
+    candidatos = []
+
+    # 1) ROI estricta debajo de la linea verde (ahi suele estar 7,30 / 7.30)
+    y_b1 = min(img.shape[0], y + h + 2)
+    y_b2 = min(img.shape[0], y + h + 140)
+    x_b1 = max(0, x - 50)
+    x_b2 = min(img.shape[1], x + w + 50)
+    if y_b2 - y_b1 >= 12 and x_b2 - x_b1 >= 12:
+        roi_bajo = img[y_b1:y_b2, x_b1:x_b2]
+        for _nombre, prep in _preparaciones_ocr(roi_bajo):
+            for valor, score in _recolectar_candidatos_ocr(prep, debajo_verde_default=True):
+                candidatos.append((valor, score + 3.0))
+
+    # 2) ROI amplia alrededor del verde (respaldo)
     margen_x = 90
-    margen_y_arriba = 55
+    margen_y_arriba = 40
     margen_y_abajo = 200
     y1 = max(0, y - margen_y_arriba)
     y2 = min(img.shape[0], y + h + margen_y_abajo)
     x1 = max(0, x - margen_x)
     x2 = min(img.shape[1], x + w + margen_x)
     roi = img[y1:y2, x1:x2]
+    for _nombre, prep in _preparaciones_ocr(roi):
+        candidatos.extend(_recolectar_candidatos_ocr(prep, debajo_verde_default=False))
 
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-    preparaciones = []
-
-    mask_amarillo = cv2.inRange(hsv_roi, np.array([10, 55, 55]), np.array([50, 255, 255]))
-    k3 = np.ones((3, 3), np.uint8)
-    mask_amarillo = cv2.dilate(mask_amarillo, k3, iterations=2)
-    if np.sum(mask_amarillo) > 60:
-        preparaciones.append(cv2.bitwise_not(mask_amarillo))
-
-    gris = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    media = float(np.mean(gris))
-    base = cv2.bitwise_not(gris) if media < 115 else gris
-    _, otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    _, otsu_inv = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    preparaciones.extend([otsu, otsu_inv])
-
-    _, b0 = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    preparaciones.extend([b0, cv2.bitwise_not(b0)])
-
-    for prep in preparaciones:
-        v = _ocr_float_desde_gris(prep)
-        if v is not None:
-            return v
-    return None
+    return _elegir_mejor_escala(candidatos)
 
 # --- FUNCIÓN DEFINITIVA: CONVOLUCIÓN DE ESQUELETOS PARA CAÑERÍAS ---
 def analizar_nodos_canerias(mask_color):
@@ -236,6 +416,7 @@ def procesar_plano_ia(
     sistema_muro="ladrillo_hueco_12",
     tipo_plano="muros",
     altura_muro=2.60,
+    forzar_escala_manual=False,
 ):
     nparr = np.frombuffer(bytes_imagen, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -250,12 +431,23 @@ def procesar_plano_ia(
     if altura < 1.8 or altura > 6.0:
         raise ValueError("Altura de muro debe estar entre 1.8 y 6.0 metros.")
 
+    try:
+        ref_manual = float(referencia_metros_manual)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Referencia de escala invalida.") from exc
+    if ref_manual <= 0 or ref_manual > 500:
+        raise ValueError("Referencia de escala debe estar entre 0 y 500 metros.")
+
     # --- ESCALA VERDE ---
     mask_v = cv2.inRange(hsv, np.array([40, 150, 50]), np.array([80, 255, 255]))
     px_v = np.sum(cv2.ximgproc.thinning(mask_v) > 0)
-    
+
     escala_leida = extraer_numero_escala(img, mask_v)
-    metros_reales = escala_leida if escala_leida else float(referencia_metros_manual)
+    # Si el usuario pulsa "Aplicar escala", el valor manual pisa al OCR.
+    if forzar_escala_manual:
+        metros_reales = ref_manual
+    else:
+        metros_reales = escala_leida if escala_leida is not None else ref_manual
     escala = (metros_reales / px_v) if px_v > 0 else 0.02
     escala_m2 = escala ** 2
 
@@ -492,13 +684,27 @@ def procesar_plano_ia(
     avisos = []
     if px_v == 0:
         avisos.append("No se detecto traza verde de escala; se aplico escala por defecto en pixels (revisa linea verde).")
-    if escala_leida is None:
+    if forzar_escala_manual:
+        if escala_leida is not None and abs(float(escala_leida) - float(metros_reales)) >= 0.02:
+            avisos.append(
+                f"Escala manual forzada: {metros_reales:.2f} m (OCR habia leido {float(escala_leida):.2f} m)."
+            )
+        else:
+            avisos.append(f"Escala manual forzada: {metros_reales:.2f} m.")
+    elif escala_leida is None:
         avisos.append("OCR no leyo un numero junto al verde; se uso la escala manual del formulario.")
     if LAST_PRECIO_META.get("fuente") == "offline":
         avisos.append("Precios en modo local (no se pudo actualizar desde el CSV publico en la ultima lectura).")
 
     res["avisos"] = avisos
-    res["escala_modo"] = "ocr" if escala_leida is not None else ("manual" if px_v > 0 else "sin_linea")
+    if px_v == 0:
+        res["escala_modo"] = "sin_linea"
+    elif forzar_escala_manual:
+        res["escala_modo"] = "manual_forzada"
+    elif escala_leida is not None:
+        res["escala_modo"] = "ocr"
+    else:
+        res["escala_modo"] = "manual"
     res["metros_referencia_usados"] = float(metros_reales)
     res["altura_muro"] = float(altura)
     res["sistema_muro"] = sistema_muro

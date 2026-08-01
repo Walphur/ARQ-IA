@@ -73,6 +73,30 @@ function ModuleIconSvg({ tipo }) {
   );
 }
 
+const textoEscalaHistorial = (meta, escalaDetectada) => {
+  const metrosRaw = meta?.metros_referencia_usados;
+  const metros =
+    metrosRaw != null && metrosRaw !== '' && !Number.isNaN(Number(metrosRaw)) ? Number(metrosRaw) : null;
+  const ocrRaw = escalaDetectada ?? meta?.escala_detectada;
+  const ocr = ocrRaw != null && ocrRaw !== '' && !Number.isNaN(Number(ocrRaw)) ? Number(ocrRaw) : null;
+  const modo = meta?.escala_modo;
+  const metrosTxt = metros != null ? `${metros.toFixed(2)} m` : null;
+  if (modo === 'ocr') {
+    return metrosTxt ? `Escala: ${metrosTxt} (OCR)` : 'Escala: OCR sobre verde';
+  }
+  if (modo === 'manual_forzada') {
+    const ocrNota = ocr != null ? ` · OCR leyo ${ocr.toFixed(2)} m` : '';
+    return metrosTxt ? `Escala: ${metrosTxt} (manual)${ocrNota}` : 'Escala: manual forzada';
+  }
+  if (modo === 'manual') {
+    return metrosTxt ? `Escala: ${metrosTxt} (manual, sin OCR)` : 'Escala: Manual (sin OCR)';
+  }
+  if (modo === 'sin_linea') {
+    return metrosTxt ? `Escala: ${metrosTxt} (sin linea verde)` : 'Escala: Sin linea verde';
+  }
+  return metrosTxt ? `Escala: ${metrosTxt}` : null;
+};
+
 const formatoMoneda = (valor) =>
   new Intl.NumberFormat('es-AR', {
     style: 'currency',
@@ -768,18 +792,19 @@ function App() {
     });
   };
 
-  const appendCalculoFields = (formData, tipo) => {
+  const appendCalculoFields = (formData, tipo, { forzarEscalaManual = false } = {}) => {
     formData.append('referencia_metros', referencia);
     formData.append('tipo_plano', tipo);
     formData.append('sistema_muro', sistemaMuro);
     formData.append('altura_muro', String(alturaMuro));
+    formData.append('forzar_escala_manual', forzarEscalaManual ? '1' : '0');
   };
 
-  const subirPlanoDemo = async (archivo, tipo) => {
+  const subirPlanoDemo = async (archivo, tipo, opts = {}) => {
     if (!archivo) return;
     const formData = new FormData();
     formData.append('file', archivo);
-    appendCalculoFields(formData, tipo);
+    appendCalculoFields(formData, tipo, opts);
 
     setLoading(tipo);
     setError('');
@@ -809,6 +834,10 @@ function App() {
         ].slice(0, 6),
       );
       setLastDemoUpload({ file: archivo, tipo: data.tipo || tipo });
+      if (data.metros_referencia_usados != null && !opts.forzarEscalaManual) {
+        const m = Number(data.metros_referencia_usados);
+        if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
+      }
       fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo procesar el plano en modo prueba.'));
@@ -847,7 +876,7 @@ function App() {
     setWorkspaceOnboardingHecho(true);
   };
 
-  const subirPlano = async (archivo, tipo) => {
+  const subirPlano = async (archivo, tipo, opts = {}) => {
     if (!archivo || !activeProjectId) return;
     if (moduloBloqueado(tipo)) {
       setError('Este modulo es Plan Pro. Activa la suscripcion con Mercado Pago para usarlo.');
@@ -855,13 +884,18 @@ function App() {
     }
     const formData = new FormData();
     formData.append('file', archivo);
-    appendCalculoFields(formData, tipo);
+    appendCalculoFields(formData, tipo, opts);
 
     setLoading(tipo);
     setError('');
     try {
-      await api.post(`/projects/${activeProjectId}/calcular`, formData);
+      const res = await api.post(`/projects/${activeProjectId}/calcular`, formData);
       setLastUploadByProject((m) => ({ ...m, [String(activeProjectId)]: { file: archivo, tipo } }));
+      const metros = res?.data?.meta?.metros_referencia_usados;
+      if (metros != null && !opts.forzarEscalaManual) {
+        const m = Number(metros);
+        if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
+      }
       await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
       fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
@@ -1064,7 +1098,7 @@ function App() {
                 </div>
               )}
             </form>
-            <p className="scale-hint">Metros del segmento verde si el OCR no lee el numero.</p>
+            <p className="scale-hint">Metros reales del segmento verde. Con Aplicar escala, este valor pisa al OCR.</p>
           </div>
           <div className={`scale-field scale-readout${!tieneDato ? ' is-empty' : ''}`}>
             <span className="scale-readout-label">Escala aplicada al calculo</span>
@@ -1072,11 +1106,19 @@ function App() {
             {!ultimo && <p className="scale-readout-meta">Procesa un plano para ver la escala usada en el calculo.</p>}
             {ultimo && tieneDato && modo === 'ocr' && (
               <p className="scale-readout-meta">
-                {ocrNum != null ? `Lectura OCR: ${ocrNum.toFixed(2)} m.` : 'Escala leida por OCR sobre la linea verde.'}
+                {ocrNum != null
+                  ? `Lectura OCR sobre el verde: ${ocrNum.toFixed(2)} m.`
+                  : 'Escala leida por OCR sobre la linea verde.'}
               </p>
             )}
             {ultimo && tieneDato && modo === 'manual' && (
               <p className="scale-readout-meta">OCR sin lectura; se uso el respaldo manual.</p>
+            )}
+            {ultimo && tieneDato && modo === 'manual_forzada' && (
+              <p className="scale-readout-meta">
+                Escala manual aplicada
+                {ocrNum != null ? ` (OCR habia leido ${ocrNum.toFixed(2)} m)` : ''}.
+              </p>
             )}
             {ultimo && tieneDato && modo === 'sin_linea' && (
               <p className="scale-readout-meta">Sin traza verde; se uso el respaldo manual.</p>
@@ -1086,6 +1128,9 @@ function App() {
                 OCR leyo {ocrNum.toFixed(2)} m; el calculo uso {aplicadoNum.toFixed(2)} m.
               </p>
             )}
+            <p className="scale-hint">
+              Si el numero del plano (ej. 7,30) no coincide, escribi 7.3 aca y pulsa Aplicar escala.
+            </p>
           </div>
         </div>
       </div>
@@ -1242,7 +1287,11 @@ function App() {
             <div className="demo-calibration-card">
               <ScalePanel
                 ultimo={demoUltimo}
-                onAplicarManual={lastDemoUpload ? () => subirPlanoDemo(lastDemoUpload.file, lastDemoUpload.tipo) : null}
+                onAplicarManual={
+                  lastDemoUpload
+                    ? () => subirPlanoDemo(lastDemoUpload.file, lastDemoUpload.tipo, { forzarEscalaManual: true })
+                    : null
+                }
               />
               <ComputeOptionsPanel />
             </div>
@@ -1314,8 +1363,8 @@ function App() {
                         <div>
                           <h3>{run.filename}</h3>
                           <p>{run.tipo} — analisis local de demostracion</p>
-                          {run.meta?.escala_modo && (
-                            <p className="escala-modo-pill">Escala: {run.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : run.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}</p>
+                          {textoEscalaHistorial(run.meta, run.escala_detectada) && (
+                            <p className="escala-modo-pill">{textoEscalaHistorial(run.meta, run.escala_detectada)}</p>
                           )}
                         </div>
                         <div className="history-meta-aside">
@@ -1764,7 +1813,9 @@ function App() {
                 <ScalePanel
                   ultimo={lastProcess}
                   onAplicarManual={
-                    canEdit && ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null
+                    canEdit && ultimoPlanoObra
+                      ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo, { forzarEscalaManual: true })
+                      : null
                   }
                 />
                 {canEdit && <ComputeOptionsPanel />}
@@ -1985,9 +2036,9 @@ function App() {
                         </label>
                         <h3>{process.filename}</h3>
                         <p>{process.tipo} - {new Date(process.created_at).toLocaleString('es-AR')}</p>
-                        {process.meta?.escala_modo && (
+                        {textoEscalaHistorial(process.meta, process.escala_detectada) && (
                           <p className="escala-modo-pill">
-                            Escala: {process.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : process.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}
+                            {textoEscalaHistorial(process.meta, process.escala_detectada)}
                           </p>
                         )}
                         {(process.meta?.sistema_muro || process.meta?.altura_muro) && process.tipo === 'muros' && (

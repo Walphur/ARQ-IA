@@ -923,6 +923,14 @@ def _parse_sistema_muro(sistema_muro: str) -> str:
     return sistema
 
 
+def _parse_forzar_escala_manual(raw) -> bool:
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+
+
 @app.post("/projects/{project_id}/calcular")
 async def calcular_en_obra(
     project_id: int,
@@ -931,6 +939,7 @@ async def calcular_en_obra(
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
     altura_muro: float = Form(2.60),
+    forzar_escala_manual: str = Form("0"),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -945,6 +954,7 @@ async def calcular_en_obra(
     validate_upload(file, contenido)
     sistema = _parse_sistema_muro(sistema_muro)
     altura = _parse_altura_muro(altura_muro)
+    forzar_manual = _parse_forzar_escala_manual(forzar_escala_manual)
 
     try:
         resultados = procesar_plano_ia(
@@ -953,6 +963,7 @@ async def calcular_en_obra(
             sistema,
             tipo_plano,
             altura_muro=altura,
+            forzar_escala_manual=forzar_manual,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -998,12 +1009,14 @@ async def calcular_demo(
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
     altura_muro: float = Form(2.60),
+    forzar_escala_manual: str = Form("0"),
 ):
     contenido = await file.read()
     validate_upload(file, contenido)
     check_demo_rate_limit(request)
     sistema = _parse_sistema_muro(sistema_muro)
     altura = _parse_altura_muro(altura_muro)
+    forzar_manual = _parse_forzar_escala_manual(forzar_escala_manual)
     try:
         return procesar_plano_ia(
             contenido,
@@ -1011,6 +1024,7 @@ async def calcular_demo(
             sistema,
             tipo_plano,
             altura_muro=altura,
+            forzar_escala_manual=forzar_manual,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
