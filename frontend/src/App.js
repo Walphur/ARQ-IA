@@ -1887,7 +1887,10 @@ function App() {
                 <ScalePanel
                   ultimo={lastProcess}
                   onAplicarManual={canEdit ? aplicarEscalaManualObra : null}
-                  aplicando={loading === 'escala' || loading === (ultimoPlanoObra?.tipo || '')}
+                  aplicando={
+                    loading === 'escala' ||
+                    (!!ultimoPlanoObra?.tipo && loading === ultimoPlanoObra.tipo)
+                  }
                 />
                 {canEdit && <ComputeOptionsPanel />}
               </div>
