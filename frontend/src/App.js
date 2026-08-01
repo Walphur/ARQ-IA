@@ -3,14 +3,24 @@ import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.jpg';
 
+const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
+const PAGE_HOST = (typeof window !== 'undefined' ? window.location.hostname : '').replace(/^www\./, '');
 const DEFAULT_API_URL =
-  window.location.hostname === 'localhost'
+  !PAGE_HOST || PAGE_HOST === 'localhost' || PAGE_HOST === '127.0.0.1'
     ? 'http://localhost:8000'
-    : `https://api.${window.location.hostname.replace(/^www\./, '')}`;
-const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim();
-// Siempre usar la URL configurada en build (p. ej. backend en Render). Forzar
-// api.{dominio} solo cuando no hay variable de entorno (subdominio propio).
-const API_URL = (ENV_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
+    : `https://api.${PAGE_HOST}`;
+
+/** Evita el hostname *.onrender.com cuando el sitio ya tiene api.{dominio} (mas estable). */
+function resolveApiUrl() {
+  if (ENV_API_URL && ENV_API_URL.includes('onrender.com') && PAGE_HOST && !PAGE_HOST.includes('onrender.com')) {
+    return `https://api.${PAGE_HOST}`;
+  }
+  return ENV_API_URL || DEFAULT_API_URL;
+}
+
+const API_URL = resolveApiUrl();
+const API_TIMEOUT_MS = 25000;
+axios.defaults.timeout = API_TIMEOUT_MS;
 
 /** Subir al cambiar la imagen de muestra en public/ (invalida cache CDN). */
 const PLANO_MUESTRA_VER = '6';
@@ -29,12 +39,16 @@ const textoLineaPrecios = (info) => {
 
 const fetchPreciosInfoPublico = async () => {
   try {
-    const r = await axios.get(`${API_URL}/precios-info`);
+    const r = await axios.get(`${API_URL}/precios-info`, { timeout: 12000 });
     return r.data;
   } catch (err) {
     if (err?.response?.status === 404) {
-      const r = await axios.get(`${API_URL}/api/precios-info`);
-      return r.data;
+      try {
+        const r = await axios.get(`${API_URL}/api/precios-info`, { timeout: 12000 });
+        return r.data;
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -107,10 +121,10 @@ const formatoMoneda = (valor) =>
 
 const postAuthWithFallback = async (path, payload) => {
   try {
-    return await axios.post(`${API_URL}${path}`, payload);
+    return await axios.post(`${API_URL}${path}`, payload, { timeout: API_TIMEOUT_MS });
   } catch (err) {
     if (err?.response?.status === 404) {
-      return axios.post(`${API_URL}/api${path}`, payload);
+      return axios.post(`${API_URL}/api${path}`, payload, { timeout: API_TIMEOUT_MS });
     }
     throw err;
   }
@@ -166,8 +180,11 @@ const getErrorMessage = (err, fallback, authMode = null) => {
     return 'No existe una cuenta con esos datos o la clave es incorrecta. Primero crea tu usuario en "Crear estudio".';
   }
   if (detail) return detail;
+  if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
+    return `La API no respondio a tiempo (${API_URL}). Revisa que el backend este online en Render.`;
+  }
   if (err?.message === 'Network Error') {
-    return 'No se pudo conectar con el servidor. Verifica REACT_APP_API_URL, CORS y que la API este online.';
+    return `No se pudo conectar con la API (${API_URL}). Verifica CORS y que el servicio este online.`;
   }
   return fallback;
 };
@@ -441,6 +458,7 @@ function App() {
   );
   const [exportasteCsv, setExportasteCsv] = useState(false);
   const [preciosInfo, setPreciosInfo] = useState(null);
+  const [preciosListo, setPreciosListo] = useState(false);
   const [inviteInfo, setInviteInfo] = useState(null);
   const [inviteLoading, setInviteLoading] = useState(false);
   const [invitations, setInvitations] = useState([]);
@@ -450,13 +468,19 @@ function App() {
   const [lastUploadByProject, setLastUploadByProject] = useState({});
 
   const api = useMemo(() => {
-    const instance = axios.create({ baseURL: API_URL });
+    const instance = axios.create({ baseURL: API_URL, timeout: API_TIMEOUT_MS });
     instance.interceptors.request.use((config) => {
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
     return instance;
   }, [token]);
+
+  const textoBarraPrecios = preciosInfo
+    ? textoLineaPrecios(preciosInfo)
+    : preciosListo
+      ? `Precios: API sin respuesta (${API_URL})`
+      : 'Precios: conectando...';
 
   const activeProject = projects.find((project) => project.id === Number(activeProjectId));
   // Mientras /me carga, no ocultar acciones; al confirmar viewer, bloquear mutaciones.
@@ -499,7 +523,11 @@ function App() {
   };
 
   useEffect(() => {
-    fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => setPreciosInfo(null));
+    setPreciosListo(false);
+    fetchPreciosInfoPublico()
+      .then((info) => setPreciosInfo(info))
+      .catch(() => setPreciosInfo(null))
+      .finally(() => setPreciosListo(true));
     getPublicWithFallback('/billing/info')
       .then((r) => setBillingPublic(r.data))
       .catch(() => setBillingPublic(null));
@@ -1281,7 +1309,7 @@ function App() {
             </button>
           </div>
         </header>
-        <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando con la API...'}</div>
+        <div className="precios-bar">{textoBarraPrecios}</div>
 
         {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
         {mostrarPlanes && (
@@ -1632,7 +1660,7 @@ function App() {
           )}
         </form>
         )}
-        <div className="precios-bar auth-precios">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
+        <div className="precios-bar auth-precios">{textoBarraPrecios}</div>
         </div>
       </div>
     );
@@ -1705,7 +1733,7 @@ function App() {
           <button className="nav-btn" onClick={logout}>Salir</button>
         </div>
       </header>
-      <div className="precios-bar">{preciosInfo ? textoLineaPrecios(preciosInfo) : 'Precios: conectando...'}</div>
+      <div className="precios-bar">{textoBarraPrecios}</div>
 
       {mostrarGuia && <ColorGuidePanel onClose={() => setMostrarGuia(false)} />}
       {mostrarPlanes && (
