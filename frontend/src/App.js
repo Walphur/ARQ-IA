@@ -466,8 +466,14 @@ function App() {
         const res = await postAuthWithFallback('/auth/forgot-password', { email: authForm.email.trim() });
         if (res.data.dev_reset_url) {
           setAuthNotice(`${res.data.detail || 'Listo.'} Enlace de desarrollo: ${res.data.dev_reset_url}`);
+        } else if (res.data.email_sent) {
+          setAuthNotice('Email enviado. Revisá bandeja de entrada y Spam.');
+        } else if (res.data.email_error) {
+          setError(`No se pudo enviar el email: ${res.data.email_error}`);
         } else {
-          setAuthNotice(res.data.detail || 'Si el email existe, enviamos un enlace para restablecer la clave.');
+          setAuthNotice(
+            'Si ese email tiene cuenta, deberia llegar el enlace. Si no llega: revisá Spam, confirma que el usuario exista (Crear estudio) y que EMAIL_FROM en Resend pueda enviar a ese destinatario (con onboarding@resend.dev solo llega al email de tu cuenta Resend).',
+          );
         }
       } catch (err) {
         setError(getErrorMessage(err, 'No se pudo enviar el email de recuperacion.'));
