@@ -71,7 +71,9 @@ allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", r"https://((.*\.onrende
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -317,6 +319,25 @@ def require_studio_owner(user: User) -> User:
     return user
 
 
+def require_can_edit(user: User) -> User:
+    """Owner y editor pueden mutar obras/analisis; viewer es solo lectura."""
+    if user.role == "viewer":
+        raise HTTPException(
+            status_code=403,
+            detail="Tu rol es solo lectura. Pedile al dueño del estudio un rol editor para subir o borrar planos.",
+        )
+    return user
+
+
+def require_can_bill(user: User) -> User:
+    if user.role != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo el dueño del estudio puede gestionar la suscripcion.",
+        )
+    return user
+
+
 def serialize_process(process: Process) -> dict:
     return {
         "id": process.id,
@@ -436,7 +457,9 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "can_edit": user.role in ("owner", "editor"),
         "can_manage_invites": user.role == "owner",
+        "can_manage_billing": user.role == "owner",
         "studio": {
             "id": user.studio.id,
             "name": user.studio.name,
@@ -470,6 +493,7 @@ def list_projects(user: User = Depends(current_user), db: Session = Depends(get_
 
 @app.post("/projects")
 def create_project(data: ProjectIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     project = Project(
         studio_id=user.studio_id,
         name=data.name.strip(),
@@ -497,13 +521,17 @@ def list_processes(project_id: int, user: User = Depends(current_user), db: Sess
 
 
 @app.get("/projects/{project_id}/export.csv")
+@app.get("/api/projects/{project_id}/export.csv")
 def export_project_csv(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
 
     output = StringIO()
-    output.write("obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_numerico,escala_detectada_ia,fecha\n")
+    # 10 columnas: no incluir audit_image_base64 (rompe Excel y pesa megas).
+    output.write(
+        "obra,cliente,tipo_plano,archivo,categoria,item,valor_texto,total_modulo,escala_detectada_ia,fecha\n"
+    )
     processes = (
         db.query(Process)
         .filter(Process.project_id == project.id)
@@ -511,9 +539,8 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
         .all()
     )
 
-
     for process in processes:
-        for item in process.items:
+        for item in process.items or []:
             nombre = str(item.get("nom", ""))
             categoria, detalle = (nombre.split(":", 1) + [""])[:2] if ":" in nombre else ("General", nombre)
             valor_txt = str(item.get("val", ""))
@@ -528,16 +555,15 @@ def export_project_csv(project_id: int, user: User = Depends(current_user), db: 
                 f"{float(process.total or 0):.2f}",
                 str(process.escala_detectada or ""),
                 process.created_at.isoformat(),
-                process.audit_image_base64,
             ]
-            escaped = ['"' + value.replace('"', '""') + '"' for value in row]
+            escaped = ['"' + str(value).replace('"', '""') + '"' for value in row]
             output.write(",".join(escaped) + "\n")
 
     output.seek(0)
     filename = f"arq-ia-obra-{project.id}.csv"
     return StreamingResponse(
         iter([output.getvalue()]),
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -690,6 +716,7 @@ def register_with_invitation(data: RegisterInviteIn, db: Session = Depends(get_d
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
@@ -702,6 +729,7 @@ def delete_project(project_id: int, user: User = Depends(current_user), db: Sess
 
 @app.delete("/processes/{process_id}")
 def delete_process(process_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_can_edit(user)
     process = db.get(Process, process_id)
     if not process:
         raise HTTPException(status_code=404, detail="Analisis no encontrado.")
@@ -714,6 +742,26 @@ def delete_process(process_id: int, user: User = Depends(current_user), db: Sess
     return {"ok": True}
 
 
+def _parse_altura_muro(altura_muro: float) -> float:
+    try:
+        h = float(altura_muro)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Altura de muro invalida.") from exc
+    if h < 1.8 or h > 6.0:
+        raise HTTPException(status_code=400, detail="Altura de muro debe estar entre 1.8 y 6.0 metros.")
+    return h
+
+
+def _parse_sistema_muro(sistema_muro: str) -> str:
+    sistema = (sistema_muro or "ladrillo_hueco_12").strip().lower()
+    if sistema not in ("ladrillo_hueco_12", "ladrillo_comun_12"):
+        raise HTTPException(
+            status_code=400,
+            detail='Sistema de muro invalido. Usa "ladrillo_hueco_12" o "ladrillo_comun_12".',
+        )
+    return sistema
+
+
 @app.post("/projects/{project_id}/calcular")
 async def calcular_en_obra(
     project_id: int,
@@ -721,9 +769,11 @@ async def calcular_en_obra(
     referencia_metros: float = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
+    altura_muro: float = Form(2.60),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    require_can_edit(user)
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
@@ -731,9 +781,17 @@ async def calcular_en_obra(
     ensure_usage_available(db, user.studio)
     contenido = await file.read()
     validate_upload(file, contenido)
+    sistema = _parse_sistema_muro(sistema_muro)
+    altura = _parse_altura_muro(altura_muro)
 
     try:
-        resultados = procesar_plano_ia(contenido, referencia_metros, sistema_muro, tipo_plano)
+        resultados = procesar_plano_ia(
+            contenido,
+            referencia_metros,
+            sistema,
+            tipo_plano,
+            altura_muro=altura,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -747,6 +805,8 @@ async def calcular_en_obra(
         "metros_referencia_usados": resultados.get("metros_referencia_usados"),
         "precios_info": resultados.get("precios_info"),
         "avisos": resultados.get("avisos") or [],
+        "sistema_muro": sistema,
+        "altura_muro": altura,
     }
     process = Process(
         project_id=project.id,
@@ -775,12 +835,21 @@ async def calcular_demo(
     referencia_metros: float = Form(...),
     sistema_muro: str = Form("ladrillo_hueco_12"),
     tipo_plano: str = Form("muros"),
+    altura_muro: float = Form(2.60),
 ):
     contenido = await file.read()
     validate_upload(file, contenido)
     check_demo_rate_limit(request)
+    sistema = _parse_sistema_muro(sistema_muro)
+    altura = _parse_altura_muro(altura_muro)
     try:
-        return procesar_plano_ia(contenido, referencia_metros, sistema_muro, tipo_plano)
+        return procesar_plano_ia(
+            contenido,
+            referencia_metros,
+            sistema,
+            tipo_plano,
+            altura_muro=altura,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -792,6 +861,7 @@ async def calcular_demo(
 
 @app.post("/billing/create-checkout-session")
 def create_checkout_session(user: User = Depends(current_user)):
+    require_can_bill(user)
     if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
         raise HTTPException(status_code=503, detail="Stripe todavia no esta configurado.")
 
@@ -815,6 +885,7 @@ def create_checkout_session(user: User = Depends(current_user)):
 
 @app.post("/billing/create-portal-session")
 def create_portal_session(data: BillingPortalIn, user: User = Depends(current_user)):
+    require_can_bill(user)
     if not STRIPE_SECRET_KEY or not user.studio.stripe_customer_id:
         raise HTTPException(status_code=503, detail="No hay cliente de Stripe configurado para este estudio.")
     session = stripe.billing_portal.Session.create(

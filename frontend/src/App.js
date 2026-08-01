@@ -15,7 +15,7 @@ const API_URL = (ENV_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
 /** Subir al cambiar la imagen de muestra en public/ (invalida cache CDN). */
 const PLANO_MUESTRA_VER = '6';
 
-const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARC-IA').trim();
+const SITE_NAME = (process.env.REACT_APP_SITE_NAME || 'ARQ-IA').trim();
 const SUPPORT_WA_DIGITS = (process.env.REACT_APP_SUPPORT_WHATSAPP || '').replace(/\D/g, '');
 const SUPPORT_WA_HREF = SUPPORT_WA_DIGITS ? `https://wa.me/${SUPPORT_WA_DIGITS}` : null;
 
@@ -118,6 +118,8 @@ const getErrorMessage = (err, fallback, authMode = null) => {
   if (status === 429 && detail) return detail;
   if (status === 413 && detail) return detail;
   if (status === 413) return 'El archivo es demasiado grande. Comprimí la imagen o subi menor resolucion.';
+  if (status === 403 && detail) return detail;
+  if (status === 403) return 'No tenes permiso para esta accion con tu rol actual.';
   if (status === 400 && detail) return detail;
   if (status === 500 && detail) return detail;
   const detailLower = detail.toLowerCase();
@@ -226,6 +228,8 @@ function App() {
   const [processes, setProcesses] = useState([]);
   const [projectForm, setProjectForm] = useState({ name: '', client: '', address: '' });
   const [referencia, setReferencia] = useState(1);
+  const [sistemaMuro, setSistemaMuro] = useState('ladrillo_hueco_12');
+  const [alturaMuro, setAlturaMuro] = useState(2.6);
   const [mostrarGuia, setMostrarGuia] = useState(false);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
@@ -256,6 +260,9 @@ function App() {
   }, [token]);
 
   const activeProject = projects.find((project) => project.id === Number(activeProjectId));
+  // Mientras /me carga, no ocultar acciones; al confirmar viewer, bloquear mutaciones.
+  const canEdit = !me || (me.role !== 'viewer' && me.can_edit !== false);
+  const canManageBilling = !me || me.can_manage_billing === true || me.role === 'owner';
   const granTotal = processes
     .filter((process) => process.tipo !== 'terreno')
     .reduce((acc, process) => acc + Number(process.total || 0), 0);
@@ -476,12 +483,18 @@ function App() {
     }
   };
 
+  const appendCalculoFields = (formData, tipo) => {
+    formData.append('referencia_metros', referencia);
+    formData.append('tipo_plano', tipo);
+    formData.append('sistema_muro', sistemaMuro);
+    formData.append('altura_muro', String(alturaMuro));
+  };
+
   const subirPlanoDemo = async (archivo, tipo) => {
     if (!archivo) return;
     const formData = new FormData();
     formData.append('file', archivo);
-    formData.append('referencia_metros', referencia);
-    formData.append('tipo_plano', tipo);
+    appendCalculoFields(formData, tipo);
 
     setLoading(tipo);
     setError('');
@@ -553,8 +566,7 @@ function App() {
     if (!archivo || !activeProjectId) return;
     const formData = new FormData();
     formData.append('file', archivo);
-    formData.append('referencia_metros', referencia);
-    formData.append('tipo_plano', tipo);
+    appendCalculoFields(formData, tipo);
 
     setLoading(tipo);
     setError('');
@@ -772,6 +784,39 @@ function App() {
     );
   };
 
+  const ComputeOptionsPanel = () => (
+    <div className="compute-options">
+      <div className="scale-panel-head">
+        <span className="eyebrow">Parametros de muro</span>
+        <strong className="scale-panel-title">Sistema y altura</strong>
+      </div>
+      <div className="compute-options-cols">
+        <label className="compute-field">
+          <span>Sistema constructivo</span>
+          <select value={sistemaMuro} onChange={(e) => setSistemaMuro(e.target.value)}>
+            <option value="ladrillo_hueco_12">Ladrillo hueco 12 cm</option>
+            <option value="ladrillo_comun_12">Ladrillo comun 12 cm</option>
+          </select>
+        </label>
+        <label className="compute-field">
+          <span>Altura de muro (m)</span>
+          <div className="scale-input-wrap">
+            <input
+              type="number"
+              min="1.8"
+              max="6"
+              step="0.1"
+              value={alturaMuro}
+              onChange={(e) => setAlturaMuro(e.target.value)}
+            />
+            <span className="scale-suffix">m</span>
+          </div>
+        </label>
+      </div>
+      <p className="scale-hint">Se aplica al modulo de muros (superficie vertical y materiales). Rango 1,8–6,0 m.</p>
+    </div>
+  );
+
   const demoGranTotal = demoRuns.filter((r) => r.tipo !== 'terreno').reduce((acc, r) => acc + Number(r.total || 0), 0);
   const demoUltimo = demoRuns[0];
 
@@ -881,6 +926,7 @@ function App() {
                 ultimo={demoUltimo}
                 onAplicarManual={lastDemoUpload ? () => subirPlanoDemo(lastDemoUpload.file, lastDemoUpload.tipo) : null}
               />
+              <ComputeOptionsPanel />
             </div>
 
             <div className="sample-actions">
@@ -1111,9 +1157,11 @@ function App() {
           <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
             {mostrarGuia ? 'Cerrar guia' : 'Guia'}
           </button>
-          <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
-            Suscripcion
-          </button>
+          {canManageBilling && (
+            <button className="nav-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
+              Suscripcion
+            </button>
+          )}
           {SUPPORT_WA_HREF && (
             <a className="nav-btn" href={SUPPORT_WA_HREF} target="_blank" rel="noreferrer">
               Soporte
@@ -1128,16 +1176,26 @@ function App() {
 
       <main className="workspace">
         <aside className="sidebar">
-          <form className="project-form" onSubmit={createProject}>
-            <span className="eyebrow">Gestion</span>
-            <h2>Nueva obra</h2>
-            <input placeholder="Nombre de obra" value={projectForm.name} onChange={(e) => setProjectForm({ ...projectForm, name: e.target.value })} />
-            <input placeholder="Cliente" value={projectForm.client} onChange={(e) => setProjectForm({ ...projectForm, client: e.target.value })} />
-            <input placeholder="Direccion" value={projectForm.address} onChange={(e) => setProjectForm({ ...projectForm, address: e.target.value })} />
-            <button className="primary-btn" disabled={loading === 'project'}>
-              {loading === 'project' ? 'Creando...' : 'Crear obra'}
-            </button>
-          </form>
+          {canEdit ? (
+            <form className="project-form" onSubmit={createProject}>
+              <span className="eyebrow">Gestion</span>
+              <h2>Nueva obra</h2>
+              <input placeholder="Nombre de obra" value={projectForm.name} onChange={(e) => setProjectForm({ ...projectForm, name: e.target.value })} />
+              <input placeholder="Cliente" value={projectForm.client} onChange={(e) => setProjectForm({ ...projectForm, client: e.target.value })} />
+              <input placeholder="Direccion" value={projectForm.address} onChange={(e) => setProjectForm({ ...projectForm, address: e.target.value })} />
+              <button className="primary-btn" disabled={loading === 'project'}>
+                {loading === 'project' ? 'Creando...' : 'Crear obra'}
+              </button>
+            </form>
+          ) : (
+            <div className="onboarding-card">
+              <span className="eyebrow">Solo lectura</span>
+              <h2>Modo viewer</h2>
+              <p className="onboarding-lead">
+                Podes ver obras, historial y exportar. Para subir planos o crear obras, pedile al dueño rol editor.
+              </p>
+            </div>
+          )}
 
           <div className="project-list">
             <div className="section-label">
@@ -1228,8 +1286,11 @@ function App() {
               <div className="panel-header-aside">
                 <ScalePanel
                   ultimo={lastProcess}
-                  onAplicarManual={ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null}
+                  onAplicarManual={
+                    canEdit && ultimoPlanoObra ? () => subirPlano(ultimoPlanoObra.file, ultimoPlanoObra.tipo) : null
+                  }
                 />
+                {canEdit && <ComputeOptionsPanel />}
                 <div className="panel-toolbar">
                   <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>
                     Exportar CSV
@@ -1237,9 +1298,11 @@ function App() {
                   <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>
                     Exportar PDF
                   </button>
-                  <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
-                    Eliminar obra
-                  </button>
+                  {canEdit && (
+                    <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
+                      Eliminar obra
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1308,35 +1371,47 @@ function App() {
             </div>
           )}
 
-          <div className="module-grid">
-            {modulos.map((modulo) => (
-              <div className="modulo-card" key={modulo.tipo}>
-                <div className="card-header">
-                  <span className="module-icon" aria-hidden>
-                    <ModuleIconSvg tipo={modulo.tipo} />
-                  </span>
-                  <div>
-                    <h3>{modulo.titulo}</h3>
-                    <p>Procesa y guarda el resultado en esta obra.</p>
+          {canEdit ? (
+            <div className="module-grid">
+              {modulos.map((modulo) => (
+                <div className="modulo-card" key={modulo.tipo}>
+                  <div className="card-header">
+                    <span className="module-icon" aria-hidden>
+                      <ModuleIconSvg tipo={modulo.tipo} />
+                    </span>
+                    <div>
+                      <h3>{modulo.titulo}</h3>
+                      <p>Procesa y guarda el resultado en esta obra.</p>
+                    </div>
                   </div>
+                  <label className={activeProjectId ? 'custom-file-upload' : 'custom-file-upload disabled'}>
+                    <input
+                      disabled={!activeProjectId || loading === modulo.tipo}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(e) => subirPlano(e.target.files[0], modulo.tipo)}
+                    />
+                    {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
+                  </label>
+                  <button
+                    type="button"
+                    className="nav-btn sample-modulo-btn"
+                    disabled={!activeProjectId || loading === modulo.tipo}
+                    onClick={() => cargarPlanoMuestra(modulo.tipo, false)}
+                  >
+                    Plano ejemplo ({modulo.icono})
+                  </button>
                 </div>
-                <label className={activeProjectId ? 'custom-file-upload' : 'custom-file-upload disabled'}>
-                  <input disabled={!activeProjectId || loading === modulo.tipo} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => subirPlano(e.target.files[0], modulo.tipo)} />
-                  {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
-                </label>
-                <button
-                  type="button"
-                  className="nav-btn sample-modulo-btn"
-                  disabled={!activeProjectId || loading === modulo.tipo}
-                  onClick={() => cargarPlanoMuestra(modulo.tipo, false)}
-                >
-                  Plano ejemplo ({modulo.icono})
-                </button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <h2>Vista de solo lectura</h2>
+              <p>Revisa el historial y exporta CSV/PDF. Las cargas estan deshabilitadas para tu rol.</p>
+            </div>
+          )}
 
-          {activeProjectId && (
+          {canEdit && activeProjectId && (
             <div className="sample-actions">
               <span className="eyebrow">Planos de referencia</span>
               <p className="sample-preview-caption">Los mismos PNG de calibracion que en la demo; se guardan como analisis en esta obra.</p>
@@ -1385,6 +1460,12 @@ function App() {
                             Escala: {process.meta.escala_modo === 'ocr' ? 'OCR sobre verde' : process.meta.escala_modo === 'manual' ? 'Manual (sin OCR)' : 'Sin linea verde'}
                           </p>
                         )}
+                        {(process.meta?.sistema_muro || process.meta?.altura_muro) && process.tipo === 'muros' && (
+                          <p className="escala-modo-pill">
+                            Muro: {process.meta.sistema_muro === 'ladrillo_comun_12' ? 'comun 12' : 'hueco 12'}
+                            {process.meta.altura_muro != null ? ` · ${Number(process.meta.altura_muro).toFixed(2)} m` : ''}
+                          </p>
+                        )}
                       </div>
                       {process.tipo !== 'terreno' && <strong>{formatoMoneda(process.total)}</strong>}
                     </div>
@@ -1406,7 +1487,11 @@ function App() {
                         </div>
                       ))}
                     </div>
-                    <button className="nav-btn" onClick={() => eliminarAnalisis(process.id)}>Eliminar analisis</button>
+                    {canEdit && (
+                      <button className="nav-btn" onClick={() => eliminarAnalisis(process.id)}>
+                        Eliminar analisis
+                      </button>
+                    )}
                     <img className="img-audit" src={`data:image/png;base64,${process.imagen}`} alt="Auditoria visual" />
                   </article>
                 ))}
