@@ -52,7 +52,7 @@ def test_sanitize_back_url_strips_query():
 
 def test_billing_info_incluye_limites(monkeypatch):
     monkeypatch.setenv("FREE_MONTHLY_LIMIT", "20")
-    monkeypatch.setenv("PAID_MONTHLY_LIMIT", "500")
+    monkeypatch.setenv("PAID_MONTHLY_LIMIT", "200")
     info = billing_mp.billing_public_info()
     assert info["free_monthly_limit"] == 20
-    assert info["paid_monthly_limit"] == 500
+    assert info["paid_monthly_limit"] == 200

@@ -276,7 +276,7 @@ function ColorGuidePanel({ onClose }) {
 function PlansPanel({ onClose, billing, onSubscribe, canSubscribe, loadingBilling }) {
   useEscapeClose(onClose);
   const freeLimit = billing?.free_monthly_limit ?? 20;
-  const paidLimit = billing?.paid_monthly_limit ?? 500;
+  const paidLimit = billing?.paid_monthly_limit ?? 200;
   const amount = billing?.amount;
   const currency = billing?.currency || 'ARS';
 
