@@ -42,6 +42,12 @@ services:
         value: ARS
       - key: MP_REASON
         value: ARQ-IA Plan Pro (mensual)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: APP_NAME
+        value: ARQ-IA
 
   - type: static
     name: arq-ia-web

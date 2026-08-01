@@ -28,6 +28,7 @@ from billing_mp import (
     mp_configured,
     verify_webhook_signature,
 )
+from email_service import email_configured, send_invite_email, send_password_reset_email
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -210,6 +211,19 @@ class StudioInvite(Base):
     studio = relationship("Studio", back_populates="invites")
 
 
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = Column(String(80), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User")
+
+
 class RegisterIn(BaseModel):
     studio_name: str
     name: str
@@ -219,6 +233,15 @@ class RegisterIn(BaseModel):
 
 class LoginIn(BaseModel):
     email: EmailStr
+    password: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
     password: str
 
 
@@ -468,6 +491,71 @@ def login(data: LoginIn, db: Session = Depends(get_db)):
     return {"token": create_token(user.id), "user": {"name": user.name, "email": user.email}}
 
 
+@app.post("/auth/forgot-password")
+@app.post("/api/auth/forgot-password")
+def forgot_password(data: ForgotPasswordIn, db: Session = Depends(get_db)):
+    """Siempre responde ok para no filtrar si el email existe."""
+    email = data.email.lower().strip()
+    user = db.query(User).filter(User.email == email, User.is_active.is_(True)).first()
+    email_sent = False
+    email_error = None
+    if user:
+        raw = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        now = datetime.now(timezone.utc)
+        # Invalidar tokens previos sin usar.
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        ).update({"used_at": now})
+        row = PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=now + timedelta(hours=1),
+        )
+        db.add(row)
+        db.commit()
+        reset_url = f"{APP_URL.rstrip('/')}/?reset={raw}"
+        mail = send_password_reset_email(to=email, reset_url=reset_url)
+        email_sent = bool(mail.get("ok"))
+        email_error = None if mail.get("ok") else mail.get("error")
+        if not email_configured():
+            # En dev sin Resend, devolvemos el link para no bloquear pruebas locales.
+            return {
+                "ok": True,
+                "email_sent": False,
+                "email_configured": False,
+                "detail": "Email no configurado. Usa el enlace de desarrollo.",
+                "dev_reset_url": reset_url,
+            }
+    return {
+        "ok": True,
+        "email_sent": email_sent,
+        "email_configured": email_configured(),
+        "detail": "Si el email existe, enviamos un enlace para restablecer la clave.",
+        "email_error": email_error,
+    }
+
+
+@app.post("/auth/reset-password")
+@app.post("/api/auth/reset-password")
+def reset_password(data: ResetPasswordIn, db: Session = Depends(get_db)):
+    if len(data.password) < 8:
+        raise HTTPException(status_code=400, detail="La clave debe tener al menos 8 caracteres.")
+    token_hash = hashlib.sha256(data.token.strip().encode()).hexdigest()
+    row = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == token_hash).first()
+    now = datetime.now(timezone.utc)
+    if not row or row.used_at or row.expires_at < now:
+        raise HTTPException(status_code=400, detail="Enlace invalido o vencido. Pedi uno nuevo.")
+    user = db.get(User, row.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail="Usuario no encontrado.")
+    user.password_hash = hash_password(data.password)
+    row.used_at = now
+    db.commit()
+    return {"ok": True, "detail": "Clave actualizada. Ya podes ingresar."}
+
+
 @app.get("/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     used = (
@@ -676,12 +764,21 @@ def create_studio_invitation(data: InviteCreateIn, user: User = Depends(current_
     db.refresh(inv)
     base = APP_URL.rstrip("/")
     invite_url = f"{base}/?invite={raw}"
+    mail = send_invite_email(
+        to=email,
+        studio_name=user.studio.name if user.studio else "estudio",
+        role=role,
+        invite_url=invite_url,
+    )
     return {
         "id": inv.id,
         "email": email,
         "role": role,
         "expires_at": inv.expires_at.isoformat(),
         "invite_url": invite_url,
+        "email_sent": bool(mail.get("ok")),
+        "email_error": None if mail.get("ok") else mail.get("error"),
+        "email_configured": email_configured(),
     }
 
 
