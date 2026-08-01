@@ -1198,6 +1198,73 @@ input[type='file'] {
   background: #090909;
 }
 
+.empty-state--hero {
+  padding: 48px 28px;
+  text-align: left;
+  max-width: 640px;
+}
+
+.empty-state--hero h2 {
+  margin: 8px 0 12px;
+  color: #fff;
+  font-size: 2rem;
+}
+
+.empty-hero-points {
+  margin: 16px 0 20px;
+  padding-left: 18px;
+  color: #c9ced6;
+  display: grid;
+  gap: 6px;
+}
+
+.premium-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  border-radius: 8px;
+  background: linear-gradient(120deg, rgba(212, 175, 55, 0.12), rgba(18, 21, 26, 0.9));
+}
+
+.premium-banner strong {
+  display: block;
+  margin: 4px 0 6px;
+  color: #fff;
+  font-size: 1.05rem;
+}
+
+.premium-banner p {
+  margin: 0;
+  color: #c9ced6;
+  font-size: 0.92rem;
+}
+
+.modulo-card.is-locked {
+  opacity: 0.92;
+  border-color: rgba(212, 175, 55, 0.35);
+  position: relative;
+}
+
+.pro-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(212, 175, 55, 0.55);
+  background: rgba(212, 175, 55, 0.12);
+  color: #d4af37;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
 .edit-project-form {
   margin: 0 0 18px;
   padding: 16px;

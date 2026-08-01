@@ -41,12 +41,14 @@ const fetchPreciosInfoPublico = async () => {
 };
 
 const modulos = [
-  { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M' },
-  { tipo: 'agua', titulo: 'Instalacion sanitaria y gas', icono: 'A' },
-  { tipo: 'luz', titulo: 'Instalacion electrica', icono: 'E' },
-  { tipo: 'techo', titulo: 'Techos y losas', icono: 'T' },
-  { tipo: 'terreno', titulo: 'Medicion de terrenos y lotes', icono: 'L' },
+  { tipo: 'muros', titulo: 'Estructura y terminaciones', icono: 'M', plan: 'free' },
+  { tipo: 'agua', titulo: 'Instalacion sanitaria y gas', icono: 'A', plan: 'pro' },
+  { tipo: 'luz', titulo: 'Instalacion electrica', icono: 'E', plan: 'pro' },
+  { tipo: 'techo', titulo: 'Techos y losas', icono: 'T', plan: 'pro' },
+  { tipo: 'terreno', titulo: 'Medicion de terrenos y lotes', icono: 'L', plan: 'free' },
 ];
+
+const MODULOS_PRO = new Set(modulos.filter((m) => m.plan === 'pro').map((m) => m.tipo));
 
 /** PNG en public/: planos de referencia usados para calibrar el motor. */
 const MUESTRA_ASSET = {
@@ -252,7 +254,7 @@ function PlansPanel({ onClose, billing, onSubscribe, canSubscribe, loadingBillin
             <p className="plan-price">$ 0 <small>/ mes</small></p>
             <ul>
               <li>Hasta {freeLimit} planos por mes</li>
-              <li>Demo publica + obras guardadas</li>
+              <li>Modulos Free: muros y terrenos</li>
               <li>Export CSV y PDF</li>
               <li>Invitaciones al equipo</li>
             </ul>
@@ -266,9 +268,9 @@ function PlansPanel({ onClose, billing, onSubscribe, canSubscribe, loadingBillin
             </p>
             <ul>
               <li>Hasta {paidLimit} planos por mes</li>
-              <li>Mismos modulos y auditoria visual</li>
+              <li>Agua/gas, electricidad y techos</li>
+              <li>Todos los modulos Free incluidos</li>
               <li>Cobro local con Mercado Pago</li>
-              <li>Prioridad para el estudio en produccion</li>
             </ul>
             {canSubscribe && (
               <button type="button" className="primary-btn" disabled={loadingBilling} onClick={onSubscribe}>
@@ -423,16 +425,18 @@ function App() {
   // Mientras /me carga, no ocultar acciones; al confirmar viewer, bloquear mutaciones.
   const canEdit = !me || (me.role !== 'viewer' && me.can_edit !== false);
   const canManageBilling = !me || me.can_manage_billing === true || me.role === 'owner';
+  const isPro = me?.studio?.plan_status === 'active';
+  const hasActiveObra = Boolean(activeProjectId && activeProject);
   const granTotal = processes
     .filter((process) => process.tipo !== 'terreno')
     .reduce((acc, process) => acc + Number(process.total || 0), 0);
   const lastProcess = processes[0];
-  const planStatus =
-    me?.studio?.plan_status === 'active'
-      ? 'Plan activo (MP)'
-      : me?.studio?.plan_status === 'paused'
-        ? 'Plan pausado'
-        : 'Plan inicial';
+  const planStatus = isPro
+    ? 'Plan Pro'
+    : me?.studio?.plan_status === 'paused'
+      ? 'Plan pausado'
+      : 'Plan Free';
+  const moduloBloqueado = (tipo) => MODULOS_PRO.has(tipo) && !isPro;
 
   const refreshMe = async () => {
     const res = await api.get('/me');
@@ -845,6 +849,10 @@ function App() {
 
   const subirPlano = async (archivo, tipo) => {
     if (!archivo || !activeProjectId) return;
+    if (moduloBloqueado(tipo)) {
+      setError('Este modulo es Plan Pro. Activa la suscripcion con Mercado Pago para usarlo.');
+      return;
+    }
     const formData = new FormData();
     formData.append('file', archivo);
     appendCalculoFields(formData, tipo);
@@ -1546,7 +1554,7 @@ function App() {
             Planes
           </button>
           {canManageBilling && (
-            (me?.studio?.has_subscription || me?.studio?.plan_status === 'active') ? (
+            isPro ? (
               <button
                 className="nav-btn"
                 onClick={cancelarSuscripcion}
@@ -1562,7 +1570,7 @@ function App() {
                 disabled={loading === 'billing'}
                 title="Pagar con Mercado Pago (ARS)"
               >
-                {loading === 'billing' ? 'Redirigiendo...' : 'Plan con Mercado Pago'}
+                {loading === 'billing' ? 'Redirigiendo...' : 'Pasar a Pro'}
               </button>
             )
           )}
@@ -1700,11 +1708,34 @@ function App() {
         </aside>
 
           <section className="main-panel">
+          {error && <div className="error-box">{error}</div>}
+
+          {!hasActiveObra ? (
+            <div className="empty-state empty-state--hero">
+              <span className="eyebrow">Workspace listo</span>
+              <h2>Primero crea o selecciona una obra</h2>
+              <p>
+                Sin una obra activa no se muestran modulos, carga de planos ni exportacion.
+                Usa el formulario de la izquierda: nombre, cliente y direccion.
+              </p>
+              <ul className="empty-hero-points">
+                <li>Free: muros y terrenos</li>
+                <li>Pro: agua/gas, electricidad y techos</li>
+                <li>Cada plano queda guardado en el historial de la obra</li>
+              </ul>
+              {!isPro && canManageBilling && (
+                <button type="button" className="primary-btn" onClick={() => setMostrarPlanes(true)}>
+                  Ver Plan Pro
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
             <div className="panel-header panel-header--split">
               <div>
                 <span className="eyebrow">Panel de computo</span>
-                <h2>{activeProject?.name || 'Selecciona una obra'}</h2>
-                <p>{activeProject?.client || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
+                <h2>{activeProject?.name || 'Obra'}</h2>
+                <p>{activeProject?.client || activeProject?.address || 'Los planos procesados quedan guardados dentro de la obra.'}</p>
               </div>
               <div className="panel-header-aside">
                 <ScalePanel
@@ -1715,10 +1746,10 @@ function App() {
                 />
                 {canEdit && <ComputeOptionsPanel />}
                 <div className="panel-toolbar">
-                  <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarCsv}>
+                  <button className="nav-btn" disabled={processes.length === 0} onClick={exportarCsv}>
                     Exportar CSV
                   </button>
-                  <button className="nav-btn" disabled={!activeProjectId || processes.length === 0} onClick={exportarPdf}>
+                  <button className="nav-btn" disabled={processes.length === 0} onClick={exportarPdf}>
                     Exportar PDF
                   </button>
                   <button
@@ -1730,7 +1761,7 @@ function App() {
                     Comparar ({compareIds.length}/2)
                   </button>
                   {canEdit && (
-                    <button className="nav-btn" disabled={!activeProjectId} onClick={eliminarObra}>
+                    <button className="nav-btn" onClick={eliminarObra}>
                       Eliminar obra
                     </button>
                   )}
@@ -1738,9 +1769,7 @@ function App() {
               </div>
             </div>
 
-          {error && <div className="error-box">{error}</div>}
-
-          {canEdit && activeProjectId && (
+          {canEdit && (
             <form className="edit-project-form" onSubmit={updateProject}>
               <div className="edit-project-head">
                 <span className="eyebrow">Obra seleccionada</span>
@@ -1788,8 +1817,7 @@ function App() {
             </div>
           </div>
 
-
-          {activeProjectId && !workspaceOnboardingHecho && (
+          {!workspaceOnboardingHecho && (
             <div className="onboarding-card workspace-onboarding">
               <div className="onboarding-card-head">
                 <div>
@@ -1802,7 +1830,7 @@ function App() {
                 </button>
               </div>
               <ol className="onboarding-steps">
-                <li className={activeProjectId ? 'done' : ''}>
+                <li className="done">
                   <span className="step-title">Obra seleccionada</span>
                   <small>Crea una obra en la barra lateral o elegi una existente.</small>
                 </li>
@@ -1831,38 +1859,67 @@ function App() {
             </div>
           )}
 
+          {!isPro && (
+            <div className="premium-banner">
+              <div>
+                <span className="eyebrow">Plan Free</span>
+                <strong>Desbloquea agua, electricidad y techos con Pro</strong>
+                <p>Muros y terrenos estan incluidos. El resto requiere suscripcion Mercado Pago.</p>
+              </div>
+              {canManageBilling && (
+                <button type="button" className="primary-btn" onClick={abrirCheckout} disabled={loading === 'billing'}>
+                  {loading === 'billing' ? 'Redirigiendo...' : 'Pasar a Pro'}
+                </button>
+              )}
+            </div>
+          )}
+
           {canEdit ? (
             <div className="module-grid">
-              {modulos.map((modulo) => (
-                <div className="modulo-card" key={modulo.tipo}>
-                  <div className="card-header">
-                    <span className="module-icon" aria-hidden>
-                      <ModuleIconSvg tipo={modulo.tipo} />
-                    </span>
-                    <div>
-                      <h3>{modulo.titulo}</h3>
-                      <p>Procesa y guarda el resultado en esta obra.</p>
+              {modulos.map((modulo) => {
+                const locked = moduloBloqueado(modulo.tipo);
+                return (
+                  <div className={`modulo-card${locked ? ' is-locked' : ''}`} key={modulo.tipo}>
+                    <div className="card-header">
+                      <span className="module-icon" aria-hidden>
+                        <ModuleIconSvg tipo={modulo.tipo} />
+                      </span>
+                      <div>
+                        <h3>
+                          {modulo.titulo}
+                          {locked && <span className="pro-badge">Pro</span>}
+                        </h3>
+                        <p>{locked ? 'Incluido en Plan Pro.' : 'Procesa y guarda el resultado en esta obra.'}</p>
+                      </div>
                     </div>
+                    {locked ? (
+                      <button type="button" className="nav-btn" onClick={() => (canManageBilling ? abrirCheckout() : setMostrarPlanes(true))}>
+                        Desbloquear con Pro
+                      </button>
+                    ) : (
+                      <>
+                        <label className="custom-file-upload">
+                          <input
+                            disabled={loading === modulo.tipo}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={(e) => subirPlano(e.target.files[0], modulo.tipo)}
+                          />
+                          {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
+                        </label>
+                        <button
+                          type="button"
+                          className="nav-btn sample-modulo-btn"
+                          disabled={loading === modulo.tipo}
+                          onClick={() => cargarPlanoMuestra(modulo.tipo, false)}
+                        >
+                          Plano ejemplo ({modulo.icono})
+                        </button>
+                      </>
+                    )}
                   </div>
-                  <label className={activeProjectId ? 'custom-file-upload' : 'custom-file-upload disabled'}>
-                    <input
-                      disabled={!activeProjectId || loading === modulo.tipo}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={(e) => subirPlano(e.target.files[0], modulo.tipo)}
-                    />
-                    {loading === modulo.tipo ? 'Procesando...' : 'Cargar plano'}
-                  </label>
-                  <button
-                    type="button"
-                    className="nav-btn sample-modulo-btn"
-                    disabled={!activeProjectId || loading === modulo.tipo}
-                    onClick={() => cargarPlanoMuestra(modulo.tipo, false)}
-                  >
-                    Plano ejemplo ({modulo.icono})
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="empty-state">
@@ -1871,7 +1928,7 @@ function App() {
             </div>
           )}
 
-          {canEdit && activeProjectId && (
+          {canEdit && (
             <div className="sample-actions">
               <span className="eyebrow">Planos de referencia</span>
               <p className="sample-preview-caption">Los mismos PNG de calibracion que en la demo; se guardan como analisis en esta obra.</p>
@@ -1881,8 +1938,8 @@ function App() {
                     key={m.tipo}
                     type="button"
                     className="nav-btn sample-chip"
-                    title={m.titulo}
-                    disabled={loading === m.tipo}
+                    title={moduloBloqueado(m.tipo) ? `${m.titulo} (Pro)` : m.titulo}
+                    disabled={loading === m.tipo || moduloBloqueado(m.tipo)}
                     onClick={() => cargarPlanoMuestra(m.tipo, false)}
                   >
                     {loading === m.tipo ? '...' : m.icono}
@@ -1895,7 +1952,7 @@ function App() {
 
           {processes.length === 0 && (
             <div className="empty-state">
-              <h2>{activeProjectId ? 'Carga el primer plano de esta obra' : 'Crea o selecciona una obra'}</h2>
+              <h2>Carga el primer plano de esta obra</h2>
               <p>El sistema guardara cada procesamiento con su desglose, total, escala detectada e imagen auditada.</p>
             </div>
           )}
@@ -1967,6 +2024,8 @@ function App() {
                   </article>
                 ))}
               </div>
+            </>
+          )}
             </>
           )}
         </section>
