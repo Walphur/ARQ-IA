@@ -1594,3 +1594,145 @@ input[type='file'] {
     text-align: center;
   }
 }
+
+/* Confirmacion custom (reemplaza window.confirm) */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.confirm-sheet {
+  width: min(420px, 100%);
+  padding: 22px 22px 18px;
+  border: 1px solid #3a3424;
+  background: linear-gradient(180deg, #1a1710 0%, #12151a 100%);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+.confirm-sheet h2 {
+  margin: 6px 0 10px;
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 1px;
+  color: #f0e6c8;
+}
+
+.confirm-sheet p {
+  margin: 0 0 18px;
+  color: #b8b0a2;
+  line-height: 1.45;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.confirm-danger-btn {
+  background: #8b1e1e !important;
+  color: #fff !important;
+  border-color: #b33 !important;
+}
+
+.confirm-danger-btn:hover {
+  filter: brightness(1.08);
+}
+
+/* Topbar compacta */
+.top-ayuda-wrap {
+  position: relative;
+}
+
+.top-dropdown,
+.project-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 200px;
+  display: grid;
+  padding: 6px;
+  border: 1px solid #3a3424;
+  background: #14181f;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.project-menu-dropdown {
+  left: 0;
+  right: auto;
+}
+
+.top-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: #e8e4da;
+  text-align: left;
+  text-decoration: none;
+}
+
+.top-dropdown-item:hover {
+  background: #211d12;
+  color: #d4af37;
+}
+
+.top-dropdown-item--danger {
+  color: #e8a0a0;
+}
+
+.nav-btn--accent {
+  border-color: #d4af37;
+  color: #d4af37;
+}
+
+/* Obra: menu ⋮ a la izquierda */
+.project-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.project-row.active .project-item {
+  border-color: #d4af37;
+  background: #211d12;
+}
+
+.project-menu-wrap {
+  position: relative;
+}
+
+.project-menu-btn {
+  height: 100%;
+  min-width: 36px;
+  padding: 0 8px;
+  border: 1px solid #2b3037;
+  background: #12151a;
+  color: #d4af37;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.project-menu-btn:hover,
+.project-row.active .project-menu-btn {
+  border-color: #d4af37;
+}
+
+.project-item {
+  border: 1px solid #2b3037;
+}
+
+.edit-project-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}

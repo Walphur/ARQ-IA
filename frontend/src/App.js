@@ -39,20 +39,25 @@ function saveApiUrl(url) {
   }
 }
 
-/** Lista de hosts a probar si uno no responde (custom domain vs onrender). */
+/** Lista de hosts a probar. Prioriza api.{dominio}: muchos adblockers bloquean *.onrender.com. */
 function buildApiCandidates() {
   const list = [];
   const add = (u) => {
     const n = normalizeApiUrl(u);
     if (n && !list.includes(n)) list.push(n);
   };
-  add(readSavedApiUrl());
-  add(ENV_API_URL);
-  add(DEFAULT_API_URL);
+  const saved = readSavedApiUrl();
+  // Si el browser guardo onrender y suele estar bloqueado, preferir custom domain primero.
+  if (saved && !saved.includes('onrender.com')) add(saved);
   if (PAGE_HOST && PAGE_HOST !== 'localhost' && PAGE_HOST !== '127.0.0.1' && !PAGE_HOST.includes('onrender.com')) {
     add(`https://api.${PAGE_HOST}`);
-    add(ONRENDER_API_URL);
   }
+  add(DEFAULT_API_URL);
+  if (ENV_API_URL && !ENV_API_URL.includes('onrender.com')) add(ENV_API_URL);
+  if (saved && saved.includes('onrender.com')) add(saved);
+  // onrender al final (Brave/uBlock suelen bloquearlo → ERR_BLOCKED_BY_CLIENT)
+  add(ONRENDER_API_URL);
+  if (ENV_API_URL) add(ENV_API_URL);
   return list.length ? list : [DEFAULT_API_URL];
 }
 
@@ -277,6 +282,9 @@ const getErrorMessage = (err, fallback, authMode = null) => {
   const detail = Array.isArray(detailRaw)
     ? detailRaw.map((d) => d?.msg || JSON.stringify(d)).join(' ')
     : String(detailRaw || '').trim();
+  if (status === 401) {
+    return detail || 'Sesion invalida o vencida. Volve a ingresar.';
+  }
   if (status === 422) {
     return detail || 'Revisa los numeros (ej. 7,3 o 7.3) e intenta de nuevo.';
   }
@@ -450,6 +458,38 @@ function PlansPanel({ onClose, billing, onSubscribe, canSubscribe, loadingBillin
   );
 }
 
+function ConfirmModal({ open, title, message, confirmLabel = 'Eliminar', cancelLabel = 'Cancelar', danger = true, busy = false, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="confirm-overlay" onClick={onCancel} role="presentation">
+      <div
+        className="confirm-sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-titulo"
+      >
+        <span className="eyebrow">{danger ? 'Confirmar' : 'Atencion'}</span>
+        <h2 id="confirm-titulo">{title}</h2>
+        <p>{message}</p>
+        <div className="confirm-actions">
+          <button type="button" className="nav-btn" disabled={busy} onClick={onCancel}>
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            className={danger ? 'primary-btn confirm-danger-btn' : 'primary-btn'}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? '...' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ComparePanel({ left, right, onClose }) {
   useEscapeClose(onClose);
   const leftItems = left?.items || [];
@@ -579,6 +619,10 @@ function App() {
   const [lastDemoUpload, setLastDemoUpload] = useState(null);
   const [lastUploadByProject, setLastUploadByProject] = useState({});
   const [apiBase, setApiBase] = useState(API_URL);
+  const [confirmDlg, setConfirmDlg] = useState(null);
+  const [obraMenuId, setObraMenuId] = useState(null);
+  const [editObraOpen, setEditObraOpen] = useState(false);
+  const [ayudaOpen, setAyudaOpen] = useState(false);
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: apiBase, timeout: API_TIMEOUT_MS });
@@ -590,6 +634,13 @@ function App() {
     instance.interceptors.response.use(
       (res) => res,
       async (err) => {
+        const status = err?.response?.status;
+        if (status === 401 && token) {
+          localStorage.removeItem('arqia_token');
+          setToken('');
+          setMe(null);
+          setError('Sesion invalida o vencida. Volve a ingresar.');
+        }
         const cfg = err?.config;
         if (!cfg || cfg.__arqiaRetried || !isTransportError(err)) throw err;
         const method = String(cfg.method || 'get').toLowerCase();
@@ -597,12 +648,13 @@ function App() {
         // No reintentar uploads/OCR: pueden tardar y un retry duplicaria el cupo.
         if (method !== 'get' && /calcular|recalcular/.test(path)) throw err;
         cfg.__arqiaRetried = true;
-        const next = API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL));
-        if (!next) throw err;
-        API_URL = next;
-        saveApiUrl(next);
-        setApiBase(next);
-        cfg.baseURL = next;
+        const next = API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL) && !String(c).includes('onrender.com'));
+        const fallback = next || API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL));
+        if (!fallback) throw err;
+        API_URL = fallback;
+        saveApiUrl(fallback);
+        setApiBase(fallback);
+        cfg.baseURL = fallback;
         return axios.request(cfg);
       },
     );
@@ -625,11 +677,6 @@ function App() {
     .filter((process) => process.tipo !== 'terreno')
     .reduce((acc, process) => acc + Number(process.total || 0), 0);
   const lastProcess = processes[0];
-  const planStatus = isPro
-    ? 'Plan Pro'
-    : me?.studio?.plan_status === 'paused'
-      ? 'Plan pausado'
-      : 'Plan Free';
   const moduloBloqueado = (tipo) => MODULOS_PRO.has(tipo) && !isPro;
 
   const refreshMe = async () => {
@@ -1089,12 +1136,26 @@ function App() {
         timeout: CALCULAR_TIMEOUT_MS,
       });
       setLastUploadByProject((m) => ({ ...m, [String(activeProjectId)]: { file: archivo, tipo } }));
-      const metros = res?.data?.meta?.metros_referencia_usados;
+      const data = res?.data;
+      const metros = data?.meta?.metros_referencia_usados;
       if (metros != null) {
         const m = Number(metros);
         if (!Number.isNaN(m) && m > 0) setReferencia(String(m));
       }
-      await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
+      // El calculo ya se guardo: actualizamos UI aunque falle el refresh (evita "Procesando..." eterno).
+      if (data?.id) {
+        setProcesses((prev) => [data, ...prev.filter((p) => p.id !== data.id)]);
+      }
+      try {
+        await Promise.all([refreshProcesses(activeProjectId), refreshMe(), refreshProjects()]);
+      } catch (refreshErr) {
+        setError(
+          getErrorMessage(
+            refreshErr,
+            'Plano procesado. Si no ves el historial, recarga la pagina (Ctrl+F5).',
+          ),
+        );
+      }
       fetchPreciosInfoPublico().then(setPreciosInfo).catch(() => {});
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo procesar el plano.'));
@@ -1162,8 +1223,17 @@ function App() {
   };
 
   const cancelarSuscripcion = async () => {
-    if (!window.confirm('Cancelar la suscripcion de Mercado Pago de este estudio?')) return;
+    setConfirmDlg({
+      kind: 'cancel-plan',
+      title: 'Cancelar Plan Pro',
+      message: 'Se cancela el cobro recurrente en Mercado Pago. Podes volver a activarlo cuando quieras.',
+      confirmLabel: 'Cancelar plan',
+    });
+  };
+
+  const ejecutarCancelarPlan = async () => {
     setLoading('billing-cancel');
+    setConfirmDlg(null);
     setError('');
     try {
       await api.post('/billing/cancel');
@@ -1255,33 +1325,81 @@ function App() {
     }
   };
 
-  const eliminarAnalisis = async (processId) => {
-    if (!window.confirm('Eliminar este analisis?')) return;
-    setError('');
-    try {
-      await api.delete(`/processes/${processId}`);
-      await Promise.all([refreshProcesses(activeProjectId), refreshProjects(), refreshMe()]);
-    } catch (err) {
-      setError(getErrorMessage(err, 'No se pudo eliminar el analisis.'));
-    }
+  const pedirEliminarAnalisis = (processId) => {
+    setConfirmDlg({
+      kind: 'analisis',
+      id: processId,
+      title: 'Eliminar analisis',
+      message: 'Se borra este resultado del historial. El cupo mensual de planos no se recupera.',
+      confirmLabel: 'Eliminar',
+    });
   };
 
-  const eliminarObra = async () => {
-    if (!activeProjectId || !window.confirm('Eliminar esta obra y todo su historial?')) return;
+  const pedirEliminarObra = (projectId) => {
+    setObraMenuId(null);
+    setConfirmDlg({
+      kind: 'obra',
+      id: projectId,
+      title: 'Eliminar obra',
+      message: 'Se borra la obra y todo su historial. Esta accion no se puede deshacer.',
+      confirmLabel: 'Eliminar obra',
+    });
+  };
+
+  const ejecutarConfirmacion = async () => {
+    if (!confirmDlg) return;
+    if (confirmDlg.kind === 'cancel-plan') {
+      await ejecutarCancelarPlan();
+      return;
+    }
+    setLoading('confirm');
     setError('');
-    const pid = String(activeProjectId);
     try {
-      await api.delete(`/projects/${activeProjectId}`);
-      setActiveProjectId('');
-      setLastUploadByProject((m) => {
-        const n = { ...m };
-        delete n[pid];
-        return n;
-      });
-      await Promise.all([refreshProjects(), refreshMe()]);
-      setProcesses([]);
+      if (confirmDlg.kind === 'analisis') {
+        const res = await api.delete(`/processes/${confirmDlg.id}`);
+        const used = res?.data?.used_this_month;
+        if (used != null) {
+          setMe((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  studio: {
+                    ...prev.studio,
+                    used_this_month: used,
+                    monthly_limit: res.data.monthly_limit ?? prev.studio.monthly_limit,
+                  },
+                }
+              : prev,
+          );
+        }
+        await Promise.all([refreshProcesses(activeProjectId), refreshProjects()]);
+        refreshMe().catch(() => {});
+      } else if (confirmDlg.kind === 'obra') {
+        const pid = String(confirmDlg.id);
+        await api.delete(`/projects/${pid}`);
+        if (String(activeProjectId) === pid) {
+          setActiveProjectId('');
+          setProcesses([]);
+        }
+        setLastUploadByProject((m) => {
+          const n = { ...m };
+          delete n[pid];
+          return n;
+        });
+        setEditObraOpen(false);
+        await refreshProjects();
+        refreshMe().catch(() => {});
+      }
+      setConfirmDlg(null);
     } catch (err) {
-      setError(getErrorMessage(err, 'No se pudo eliminar la obra.'));
+      setError(
+        getErrorMessage(
+          err,
+          confirmDlg.kind === 'obra' ? 'No se pudo eliminar la obra.' : 'No se pudo eliminar el analisis.',
+        ),
+      );
+    } finally {
+      setLoading('');
     }
   };
 
@@ -1842,45 +1960,80 @@ function App() {
           {mobileNavOpen ? 'Cerrar' : 'Menu'}
         </button>
         <div id="top-actions-menu" className={`top-actions${mobileNavOpen ? ' is-open' : ''}`}>
-          <div className="usage-pill">
-            {me?.studio?.used_this_month || 0}/{me?.studio?.monthly_limit || 0} planos
+          <div className="usage-pill" title="Cupo mensual (no baja al borrar analisis)">
+            {me?.studio?.used_this_month || 0}/{me?.studio?.monthly_limit || 0}
           </div>
-          <div className="plan-pill">{planStatus}</div>
-          <a className="nav-btn" href="/plantilla-paleta-arq-ia.svg" download="plantilla-paleta-arq-ia.svg">
-            Paleta SVG
-          </a>
-          <button type="button" className={`nav-btn${mostrarGuia ? ' nav-btn--active' : ''}`} onClick={() => setMostrarGuia(!mostrarGuia)}>
-            {mostrarGuia ? 'Cerrar guia' : 'Guia'}
-          </button>
-          <button type="button" className={`nav-btn${mostrarPlanes ? ' nav-btn--active' : ''}`} onClick={() => setMostrarPlanes(true)}>
-            Planes
-          </button>
-          {canManageBilling && (
-            isPro ? (
-              <button
-                className="nav-btn"
-                onClick={cancelarSuscripcion}
-                disabled={loading === 'billing-cancel'}
-                title="Cancelar cobro recurrente en Mercado Pago"
-              >
-                {loading === 'billing-cancel' ? 'Cancelando...' : 'Cancelar plan'}
-              </button>
-            ) : (
-              <button
-                className="nav-btn"
-                onClick={abrirCheckout}
-                disabled={loading === 'billing'}
-                title="Pagar con Mercado Pago (ARS)"
-              >
-                {loading === 'billing' ? 'Redirigiendo...' : 'Pasar a Pro'}
-              </button>
-            )
+          <div className="top-ayuda-wrap">
+            <button
+              type="button"
+              className={`nav-btn${ayudaOpen || mostrarGuia ? ' nav-btn--active' : ''}`}
+              onClick={() => setAyudaOpen((v) => !v)}
+              aria-expanded={ayudaOpen}
+            >
+              Ayuda
+            </button>
+            {ayudaOpen && (
+              <div className="top-dropdown">
+                <button
+                  type="button"
+                  className="top-dropdown-item"
+                  onClick={() => {
+                    setAyudaOpen(false);
+                    setMostrarGuia(true);
+                  }}
+                >
+                  Guia de colores
+                </button>
+                <a
+                  className="top-dropdown-item"
+                  href="/plantilla-paleta-arq-ia.svg"
+                  download="plantilla-paleta-arq-ia.svg"
+                  onClick={() => setAyudaOpen(false)}
+                >
+                  Descargar paleta SVG
+                </a>
+                <button
+                  type="button"
+                  className="top-dropdown-item"
+                  onClick={() => {
+                    setAyudaOpen(false);
+                    setMostrarPlanes(true);
+                  }}
+                >
+                  Planes Free / Pro
+                </button>
+                {canManageBilling && isPro && (
+                  <button
+                    type="button"
+                    className="top-dropdown-item"
+                    disabled={loading === 'billing-cancel'}
+                    onClick={() => {
+                      setAyudaOpen(false);
+                      cancelarSuscripcion();
+                    }}
+                  >
+                    Cancelar plan
+                  </button>
+                )}
+                {SUPPORT_WA_HREF && (
+                  <a className="top-dropdown-item" href={SUPPORT_WA_HREF} target="_blank" rel="noreferrer" onClick={() => setAyudaOpen(false)}>
+                    Soporte WhatsApp
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+          {canManageBilling && !isPro && (
+            <button
+              className="nav-btn nav-btn--accent"
+              onClick={abrirCheckout}
+              disabled={loading === 'billing'}
+              title="Activar Plan Pro"
+            >
+              {loading === 'billing' ? '...' : 'Pro'}
+            </button>
           )}
-          {SUPPORT_WA_HREF && (
-            <a className="nav-btn" href={SUPPORT_WA_HREF} target="_blank" rel="noreferrer">
-              Soporte
-            </a>
-          )}
+          {isPro && <div className="plan-pill">Pro</div>}
           <button className="nav-btn" onClick={logout}>Salir</button>
         </div>
       </header>
@@ -1902,6 +2055,16 @@ function App() {
       {mostrarCompare && compareLeft && compareRight && (
         <ComparePanel left={compareLeft} right={compareRight} onClose={() => setMostrarCompare(false)} />
       )}
+      <ConfirmModal
+        open={Boolean(confirmDlg)}
+        title={confirmDlg?.title || ''}
+        message={confirmDlg?.message || ''}
+        confirmLabel={confirmDlg?.confirmLabel || 'Confirmar'}
+        danger={confirmDlg?.kind !== 'cancel-plan'}
+        busy={loading === 'confirm' || loading === 'billing-cancel'}
+        onCancel={() => setConfirmDlg(null)}
+        onConfirm={ejecutarConfirmacion}
+      />
 
       <main className="workspace">
         <aside className="sidebar">
@@ -1931,16 +2094,64 @@ function App() {
               <span className="eyebrow">Workspace</span>
               <h2>Obras</h2>
             </div>
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                className={String(project.id) === String(activeProjectId) ? 'project-item active' : 'project-item'}
-                onClick={() => setActiveProjectId(String(project.id))}
-              >
-                <span>{project.name}</span>
-                <small>{project.process_count} analisis</small>
-              </button>
-            ))}
+            {projects.map((project) => {
+              const selected = String(project.id) === String(activeProjectId);
+              const menuOpen = String(obraMenuId) === String(project.id);
+              return (
+                <div key={project.id} className={`project-row${selected ? ' active' : ''}`}>
+                  {canEdit && (
+                    <div className="project-menu-wrap">
+                      <button
+                        type="button"
+                        className="project-menu-btn"
+                        aria-label={`Opciones de ${project.name}`}
+                        aria-expanded={menuOpen}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setObraMenuId(menuOpen ? null : project.id);
+                        }}
+                      >
+                        ⋮
+                      </button>
+                      {menuOpen && (
+                        <div className="project-menu-dropdown">
+                          <button
+                            type="button"
+                            className="top-dropdown-item"
+                            onClick={() => {
+                              setActiveProjectId(String(project.id));
+                              setObraMenuId(null);
+                              setEditObraOpen(true);
+                            }}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            className="top-dropdown-item top-dropdown-item--danger"
+                            onClick={() => pedirEliminarObra(project.id)}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="project-item"
+                    onClick={() => {
+                      setActiveProjectId(String(project.id));
+                      setObraMenuId(null);
+                      setEditObraOpen(false);
+                    }}
+                  >
+                    <span>{project.name}</span>
+                    <small>{project.process_count} analisis</small>
+                  </button>
+                </div>
+              );
+            })}
             {projects.length === 0 && <p className="empty-text">Crea una obra para empezar a guardar historial.</p>}
           </div>
 
@@ -2055,11 +2266,6 @@ function App() {
                   >
                     Comparar ({compareIds.length}/2)
                   </button>
-                  {canEdit && (
-                    <button className="nav-btn" onClick={eliminarObra}>
-                      Eliminar obra
-                    </button>
-                  )}
                 </div>
               </div>
               <div className="panel-controls">
@@ -2075,11 +2281,20 @@ function App() {
               </div>
             </div>
 
-          {canEdit && (
-            <form className="edit-project-form" onSubmit={updateProject}>
+          {canEdit && editObraOpen && (
+            <form
+              className="edit-project-form"
+              onSubmit={async (e) => {
+                const ok = await updateProject(e);
+                if (ok) setEditObraOpen(false);
+              }}
+            >
               <div className="edit-project-head">
-                <span className="eyebrow">Obra seleccionada</span>
+                <span className="eyebrow">Obra</span>
                 <h3>Editar datos</h3>
+                <button type="button" className="nav-btn" onClick={() => setEditObraOpen(false)}>
+                  Cerrar
+                </button>
               </div>
               <div className="edit-project-grid">
                 <input
@@ -2098,7 +2313,7 @@ function App() {
                   onChange={(e) => setEditProjectForm({ ...editProjectForm, address: e.target.value })}
                 />
                 <button className="primary-btn" disabled={loading === 'project-edit'}>
-                  {loading === 'project-edit' ? 'Guardando...' : 'Guardar cambios'}
+                  {loading === 'project-edit' ? 'Guardando...' : 'Guardar'}
                 </button>
               </div>
             </form>
@@ -2322,7 +2537,7 @@ function App() {
                       ))}
                     </div>
                     {canEdit && (
-                      <button className="nav-btn" onClick={() => eliminarAnalisis(process.id)}>
+                      <button className="nav-btn" onClick={() => pedirEliminarAnalisis(process.id)}>
                         Eliminar analisis
                       </button>
                     )}

@@ -139,7 +139,7 @@ class Studio(Base):
     name = Column(String(180), nullable=False)
     plan_status = Column(String(40), nullable=False, default="trial")
     monthly_limit = Column(Integer, nullable=False, default=FREE_MONTHLY_LIMIT)
-    # Cupo mensual acumulativo: suma al procesar y NO baja al borrar analisis.
+    # Legacy counters (se mantienen por DBs existentes; el cupo real usa usage_events).
     usage_month_key = Column(String(7), nullable=True)  # YYYY-MM UTC
     usage_count = Column(Integer, nullable=False, default=0)
     # Legacy Stripe (ya no se usa; se mantiene por DBs existentes).
@@ -151,6 +151,21 @@ class Studio(Base):
     users = relationship("User", back_populates="studio")
     projects = relationship("Project", back_populates="studio")
     invites = relationship("StudioInvite", back_populates="studio")
+    usage_events = relationship("UsageEvent", back_populates="studio")
+
+
+class UsageEvent(Base):
+    """Evento de consumo de cupo. Append-only: borrar un analisis NO elimina eventos."""
+
+    __tablename__ = "usage_events"
+
+    id = Column(Integer, primary_key=True)
+    studio_id = Column(Integer, ForeignKey("studios.id"), nullable=False, index=True)
+    kind = Column(String(40), nullable=False, default="calcular")
+    process_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+    studio = relationship("Studio", back_populates="usage_events")
 
 
 class User(Base):
@@ -290,6 +305,7 @@ def startup():
         ensure_process_result_meta_column()
         ensure_studio_mp_preapproval_column()
         ensure_studio_usage_columns()
+        ensure_usage_events_backfill()
     except Exception as exc:
         print(f"[WARN] startup schema/migracion: {exc}")
 
@@ -337,31 +353,42 @@ def ensure_studio_usage_columns():
             else:
                 conn.execute(text("ALTER TABLE studios ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0"))
 
-    # Backfill en background para no demorar el healthcheck de Render.
+def ensure_usage_events_backfill():
+    """Si el ledger esta vacio, siembra eventos desde usage_count / procesos del mes."""
+
     def _backfill():
-        key = datetime.now(timezone.utc).strftime("%Y-%m")
-        start = month_start()
         db = SessionLocal()
         try:
-            studios = db.query(Studio).filter(Studio.usage_month_key.is_(None)).all()
+            start = month_start()
+            studios = db.query(Studio).all()
             for studio in studios:
-                used = (
+                existing = (
+                    db.query(UsageEvent)
+                    .filter(UsageEvent.studio_id == studio.id, UsageEvent.created_at >= start)
+                    .count()
+                )
+                if existing > 0:
+                    continue
+                processes_month = (
                     db.query(Process)
                     .join(Project)
                     .filter(Project.studio_id == studio.id, Process.created_at >= start)
                     .count()
                 )
-                studio.usage_month_key = key
-                studio.usage_count = int(used)
-                db.add(studio)
-            if studios:
-                db.commit()
+                seed = max(int(studio.usage_count or 0), int(processes_month))
+                for _ in range(seed):
+                    db.add(UsageEvent(studio_id=studio.id, kind="backfill", process_id=None))
+                if seed:
+                    studio.usage_month_key = current_usage_month_key()
+                    studio.usage_count = seed
+                    db.add(studio)
+            db.commit()
         except Exception as exc:
-            print(f"[WARN] usage backfill: {exc}")
+            print(f"[WARN] usage_events backfill: {exc}")
         finally:
             db.close()
 
-    threading.Thread(target=_backfill, name="usage-backfill", daemon=True).start()
+    threading.Thread(target=_backfill, name="usage-events-backfill", daemon=True).start()
 
 
 def hash_password(password: str) -> str:
@@ -478,33 +505,37 @@ def current_usage_month_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def sync_studio_usage_month(studio: Studio) -> None:
-    """Reinicia el cupo solo al cambiar de mes (UTC)."""
-    key = current_usage_month_key()
-    if studio.usage_month_key != key:
-        studio.usage_month_key = key
-        studio.usage_count = 0
-
-
-def used_this_month(studio: Studio) -> int:
-    if studio.usage_month_key != current_usage_month_key():
-        return 0
-    return int(studio.usage_count or 0)
+def used_this_month(db: Session, studio: Studio) -> int:
+    """Cuenta eventos del mes. Borrar analisis no reduce este numero."""
+    return (
+        db.query(UsageEvent)
+        .filter(UsageEvent.studio_id == studio.id, UsageEvent.created_at >= month_start())
+        .count()
+    )
 
 
 def ensure_usage_available(db: Session, studio: Studio):
-    sync_studio_usage_month(studio)
-    db.add(studio)
-    if used_this_month(studio) >= studio.monthly_limit:
+    if used_this_month(db, studio) >= studio.monthly_limit:
         raise HTTPException(
             status_code=402,
             detail=f"Tu plan permite {studio.monthly_limit} planos por mes. Actualiza la suscripcion para seguir.",
         )
 
 
-def consume_usage(db: Session, studio: Studio) -> None:
-    """Suma 1 al cupo del mes. No se revierte al borrar un analisis."""
-    sync_studio_usage_month(studio)
+def consume_usage(db: Session, studio: Studio, process_id: int | None = None) -> None:
+    """Registra 1 consumo. Persistente aunque se borre el analisis."""
+    db.add(
+        UsageEvent(
+            studio_id=studio.id,
+            kind="calcular",
+            process_id=process_id,
+        )
+    )
+    # Mantener columnas legacy alineadas (solo informativo).
+    key = current_usage_month_key()
+    if studio.usage_month_key != key:
+        studio.usage_month_key = key
+        studio.usage_count = 0
     studio.usage_count = int(studio.usage_count or 0) + 1
     db.add(studio)
 
@@ -648,13 +679,6 @@ def reset_password(data: ResetPasswordIn, db: Session = Depends(get_db)):
 @app.get("/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     studio = user.studio
-    key = current_usage_month_key()
-    if studio.usage_month_key != key:
-        studio.usage_month_key = key
-        studio.usage_count = 0
-        db.add(studio)
-        db.commit()
-        db.refresh(studio)
     return {
         "id": user.id,
         "name": user.name,
@@ -668,7 +692,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "name": studio.name,
             "plan_status": studio.plan_status,
             "monthly_limit": studio.monthly_limit,
-            "used_this_month": used_this_month(studio),
+            "used_this_month": used_this_month(db, studio),
             "has_subscription": bool(studio.mp_preapproval_id),
         },
         "billing": billing_public_info(),
@@ -978,7 +1002,12 @@ def delete_process(process_id: int, user: User = Depends(current_user), db: Sess
 
     db.delete(process)
     db.commit()
-    return {"ok": True}
+    # Cupo mensual NO se reduce al borrar.
+    return {
+        "ok": True,
+        "used_this_month": used_this_month(db, user.studio),
+        "monthly_limit": user.studio.monthly_limit,
+    }
 
 
 def _parse_float_locale(raw, field_name: str) -> float:
@@ -1100,7 +1129,8 @@ async def calcular_en_obra(
         result_meta=result_meta,
     )
     db.add(process)
-    consume_usage(db, user.studio)
+    db.flush()  # obtiene process.id
+    consume_usage(db, user.studio, process_id=process.id)
     db.commit()
     db.refresh(process)
     return serialize_process(process)
