@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.jpg';
@@ -520,6 +520,49 @@ function ConfirmModal({ open, title, message, confirmLabel = 'Eliminar', cancelL
   );
 }
 
+function ProcessAuditImage({ api, process, onLoaded }) {
+  const [src, setSrc] = useState(process?.imagen || null);
+  const [status, setStatus] = useState(process?.imagen ? 'ready' : 'idle');
+
+  useEffect(() => {
+    if (process?.imagen) {
+      setSrc(process.imagen);
+      setStatus('ready');
+      return undefined;
+    }
+    if (!process?.id || process.has_imagen === false) {
+      setSrc(null);
+      setStatus('empty');
+      return undefined;
+    }
+    let cancelled = false;
+    setStatus('loading');
+    api
+      .get(`/processes/${process.id}`, { timeout: CALCULAR_TIMEOUT_MS })
+      .then((res) => {
+        if (cancelled) return;
+        const img = res.data?.imagen || null;
+        setSrc(img);
+        setStatus(img ? 'ready' : 'empty');
+        if (img && onLoaded) onLoaded(process.id, img);
+      })
+      .catch(() => {
+        if (!cancelled) setStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, process?.id, process?.imagen, process?.has_imagen, onLoaded]);
+
+  if (status === 'loading' || status === 'idle') {
+    return <p className="auth-help">Cargando imagen de auditoria…</p>;
+  }
+  if (!src) {
+    return <p className="auth-help">Sin imagen de auditoria.</p>;
+  }
+  return <img className="img-audit" src={`data:image/png;base64,${src}`} alt="Auditoria visual" />;
+}
+
 function ComparePanel({ left, right, onClose }) {
   useEscapeClose(onClose);
   const leftItems = left?.items || [];
@@ -618,6 +661,8 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('arqia_project_id') || '');
   const [processes, setProcesses] = useState([]);
+  const [processesLoading, setProcessesLoading] = useState(false);
+  const processesReqRef = useRef(0);
   const [projectForm, setProjectForm] = useState({ name: '', client: '', address: '' });
   const [referencia, setReferencia] = useState(1);
   const [sistemaMuro, setSistemaMuro] = useState('ladrillo_hueco_12');
@@ -656,6 +701,7 @@ function App() {
 
   const api = useMemo(() => {
     const instance = axios.create({ baseURL: apiBase, timeout: API_TIMEOUT_MS });
+    attachRequestIdInterceptor(instance);
     instance.interceptors.request.use((config) => {
       config.baseURL = API_URL;
       if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -734,12 +780,27 @@ function App() {
 
   const refreshProcesses = async (projectId = activeProjectId) => {
     if (!projectId) {
+      processesReqRef.current += 1;
       setProcesses([]);
+      setProcessesLoading(false);
       return;
     }
-    const res = await api.get(`/projects/${projectId}/processes`);
-    setProcesses(res.data);
+    const reqId = ++processesReqRef.current;
+    setProcessesLoading(true);
+    try {
+      const res = await api.get(`/projects/${projectId}/processes`);
+      if (reqId !== processesReqRef.current) return;
+      setProcesses(Array.isArray(res.data) ? res.data : []);
+    } finally {
+      if (reqId === processesReqRef.current) setProcessesLoading(false);
+    }
   };
+
+  const mergeProcessImage = useCallback((processId, imagen) => {
+    setProcesses((prev) =>
+      prev.map((p) => (p.id === processId ? { ...p, imagen, has_imagen: true } : p)),
+    );
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -870,11 +931,19 @@ function App() {
   useEffect(() => {
     if (activeProjectId) {
       localStorage.setItem('arqia_project_id', String(activeProjectId));
-      refreshProcesses(activeProjectId).catch(() => {
-        localStorage.removeItem('arqia_token');
-        setToken('');
-        setMe(null);
+      refreshProcesses(activeProjectId).catch((err) => {
+        // 401 ya lo maneja el interceptor; no expulsar sesión por timeout/red.
+        if (err?.response?.status === 401) return;
+        setError(
+          getErrorMessage(
+            err,
+            'No se pudieron cargar los analisis. Espera unos segundos e intenta de nuevo.',
+          ),
+        );
       });
+    } else {
+      setProcesses([]);
+      setProcessesLoading(false);
     }
     setExportasteCsv(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2363,11 +2432,13 @@ function App() {
           <div className="kpi-grid">
             <div className="kpi-card">
               <span>Total estimado</span>
-              <strong>{formatoMoneda(granTotal)}</strong>
+              <strong>
+                {processesLoading && processes.length === 0 ? '…' : formatoMoneda(granTotal)}
+              </strong>
             </div>
             <div className="kpi-card">
               <span>Analisis guardados</span>
-              <strong>{processes.length}</strong>
+              <strong>{processesLoading ? '…' : processes.length}</strong>
             </div>
             <div className="kpi-card">
               <span>Ultimo modulo</span>
@@ -2512,7 +2583,14 @@ function App() {
             </div>
           )}
 
-          {processes.length === 0 && (
+          {processesLoading && processes.length === 0 && (
+            <div className="empty-state">
+              <h2>Cargando analisis…</h2>
+              <p>Traemos el historial de esta obra. Si la API esta en cold start, puede tardar unos segundos.</p>
+            </div>
+          )}
+
+          {!processesLoading && processes.length === 0 && (
             <div className="empty-state">
               <h2>Carga el primer plano de esta obra</h2>
               <p>El sistema guardara cada procesamiento con su desglose, total, escala detectada e imagen auditada.</p>
@@ -2567,7 +2645,7 @@ function App() {
                       </div>
                     )}
                     <div className="desglose-list">
-                      {process.items.map((item, index) => (
+                      {(process.items || []).map((item, index) => (
                         <div key={index} className="desglose-item">
                           <div>
                             <span>{item.nom}</span>
@@ -2582,7 +2660,7 @@ function App() {
                         Eliminar analisis
                       </button>
                     )}
-                    <img className="img-audit" src={`data:image/png;base64,${process.imagen}`} alt="Auditoria visual" />
+                    <ProcessAuditImage api={api} process={process} onLoaded={mergeProcessImage} />
                   </article>
                 ))}
               </div>

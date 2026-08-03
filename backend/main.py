@@ -542,7 +542,9 @@ bind_geometry_deps(
 )
 
 
-def serialize_process(process: Process) -> dict:
+def serialize_process(process: Process, *, include_image: bool = True) -> dict:
+    """Serializa Process. En listados usar include_image=False (base64 pesa MB y tumba el GET)."""
+    has_image = bool(process.audit_image_base64)
     return {
         "id": process.id,
         "project_id": process.project_id,
@@ -550,7 +552,8 @@ def serialize_process(process: Process) -> dict:
         "filename": process.filename,
         "items": process.items,
         "total": process.total,
-        "imagen": process.audit_image_base64,
+        "imagen": process.audit_image_base64 if include_image else None,
+        "has_imagen": has_image,
         "escala_detectada": process.escala_detectada,
         "meta": process.result_meta or {},
         "created_at": process.created_at.isoformat(),
@@ -839,6 +842,7 @@ def update_project(project_id: int, data: ProjectIn, user: User = Depends(curren
 
 @app.get("/projects/{project_id}/processes")
 def list_processes(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Lista análisis de la obra sin embeber audit images (evita timeout del FE)."""
     project = db.get(Project, project_id)
     if not project or project.studio_id != user.studio_id:
         raise HTTPException(status_code=404, detail="Obra no encontrada.")
@@ -848,7 +852,19 @@ def list_processes(project_id: int, user: User = Depends(current_user), db: Sess
         .order_by(Process.created_at.desc())
         .all()
     )
-    return [serialize_process(process) for process in processes]
+    return [serialize_process(process, include_image=False) for process in processes]
+
+
+@app.get("/processes/{process_id}")
+def get_process(process_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Detalle de un análisis (incluye imagen auditada)."""
+    process = db.get(Process, process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+    project = db.get(Project, process.project_id)
+    if not project or project.studio_id != user.studio_id:
+        raise HTTPException(status_code=404, detail="Analisis no encontrado.")
+    return serialize_process(process, include_image=True)
 
 
 @app.get("/projects/{project_id}/export.csv")
