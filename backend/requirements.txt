@@ -9,3 +9,10 @@ psycopg[binary]==3.2.3
 pydantic[email]==2.10.4
 fpdf2==2.8.2
 pytest==8.3.4
+# Observability adapters only (E01-F01) — never import from domain modules
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-http==1.29.0
+httpx==0.28.1
+# MDO E02-F01 — migraciones formales del dominio (tablas mdo_*)
+alembic==1.14.0

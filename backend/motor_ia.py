@@ -97,7 +97,17 @@ def obtener_precios_en_vivo():
                     pass
         fuente = "google_sheets"
     except Exception as e:
-        print(f"Error leyendo Sheets (usando precios offline): {e}")
+        try:
+            from infrastructure.observability import get_observability
+
+            get_observability().warning(
+                "Error leyendo Sheets (usando precios offline)",
+                feature="costs",
+                module="motor_ia",
+                error=str(e),
+            )
+        except Exception:
+            pass
 
     _precios_cache = P
     _precios_cache_ts = now

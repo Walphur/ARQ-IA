@@ -29,6 +29,12 @@ from billing_mp import (
     verify_webhook_signature,
 )
 from email_service import email_configured, send_invite_email, send_password_reset_email
+from infrastructure.observability import configure_observability, get_observability
+from infrastructure.observability.http import ObservabilityMiddleware, metrics_router
+from infrastructure.runtime import configure_runtime, get_runtime
+from infrastructure.runtime.http import runtime_router
+from mdo.http import router as mdo_router
+from mdo.setup import bind_mdo_deps, run_mdo_migrations
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -60,9 +66,15 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 DEMO_RATE_WINDOW_SEC = int(os.getenv("DEMO_RATE_WINDOW_SEC", "3600"))
 DEMO_RATE_MAX = int(os.getenv("DEMO_RATE_MAX", "30"))
 
+configure_observability()
+_obs = get_observability()
 
 if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
-    print("[WARN] DATABASE_URL no configurada en Render: usando SQLite efimera. Configura PostgreSQL para persistencia.")
+    _obs.warning(
+        "DATABASE_URL no configurada en Render: usando SQLite efimera",
+        feature="platform",
+        module="startup",
+    )
 
 _engine_kwargs = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("postgresql"):
@@ -74,7 +86,12 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 JsonColumn = JSONB if DATABASE_URL.startswith("postgresql") else JSON
 
+configure_runtime(engine)
+
 app = FastAPI(title="ARQ-IA API")
+app.include_router(metrics_router)
+app.include_router(runtime_router)
+app.include_router(mdo_router)
 
 allowed_origins = [
     origin.strip()
@@ -97,6 +114,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost for request_id / traces / RED (Starlette: last added runs first).
+app.add_middleware(ObservabilityMiddleware)
 
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
@@ -301,13 +320,29 @@ def get_db():
 def startup():
     """Migraciones best-effort: no tumbar el proceso si la DB tarda o falla un ALTER."""
     try:
+        # Legacy identity/billing/process: create_all + ensures ad-hoc.
         Base.metadata.create_all(bind=engine)
         ensure_process_result_meta_column()
         ensure_studio_mp_preapproval_column()
         ensure_studio_usage_columns()
         ensure_usage_events_backfill()
     except Exception as exc:
-        print(f"[WARN] startup schema/migracion: {exc}")
+        get_observability().warning(
+            "startup schema/migracion",
+            feature="platform",
+            module="startup",
+            error=str(exc),
+        )
+    # MDO: migraciones formales Alembic (no create_all). Fallo no tumba el proceso.
+    try:
+        run_mdo_migrations(DATABASE_URL)
+    except Exception as exc:
+        get_observability().warning(
+            "startup mdo migraciones",
+            feature="mdo",
+            module="startup",
+            error=str(exc),
+        )
 
 
 def ensure_process_result_meta_column():
@@ -384,7 +419,12 @@ def ensure_usage_events_backfill():
                     db.add(studio)
             db.commit()
         except Exception as exc:
-            print(f"[WARN] usage_events backfill: {exc}")
+            get_observability().warning(
+                "usage_events backfill",
+                feature="platform",
+                module="startup",
+                error=str(exc),
+            )
         finally:
             db.close()
 
@@ -465,6 +505,20 @@ def require_can_bill(user: User) -> User:
             detail="Solo el dueño del estudio puede gestionar la suscripcion.",
         )
     return user
+
+
+def project_belongs_to_studio(db: Session, project_id: int, studio_id: int) -> bool:
+    project = db.get(Project, project_id)
+    return bool(project and project.studio_id == studio_id)
+
+
+# MDO HTTP deps (composition root). Migrations corren en startup.
+bind_mdo_deps(
+    get_db=get_db,
+    current_user=current_user,
+    require_can_edit=require_can_edit,
+    project_belongs_to_studio=project_belongs_to_studio,
+)
 
 
 def serialize_process(process: Process) -> dict:
@@ -560,11 +614,13 @@ async def root():
 
 @app.get("/api/health")
 async def health_api():
-    return {"status": "ok", "version": APP_VERSION}
+    # Liveness only — RuntimeStatusService.liveness never touches DB/deps.
+    return get_runtime().liveness()
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": APP_VERSION}
+    # Liveness only — RuntimeStatusService.liveness never touches DB/deps.
+    return get_runtime().liveness()
 
 
 @app.get("/precios-info")

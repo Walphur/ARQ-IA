@@ -48,6 +48,30 @@ services:
         sync: false
       - key: APP_NAME
         value: ARQ-IA
+      - key: OBS_MODE
+        value: basic
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_FORMAT
+        value: json
+      - key: APP_ENV
+        value: production
+      - key: METRICS_TOKEN
+        sync: false
+      - key: OTEL_ENABLED
+        value: "false"
+      - key: OTEL_SERVICE_NAME
+        value: arq-ia-api
+      - key: PLATFORM_MODE
+        value: normal
+      - key: PLATFORM_EXPORTS_ENABLED
+        value: "true"
+      - key: PLATFORM_AI_ENABLED
+        value: "true"
+      - key: READY_DB_TIMEOUT_MS
+        value: "500"
+      - key: API_VERSION
+        value: v1
 
   - type: static
     name: arq-ia-web
