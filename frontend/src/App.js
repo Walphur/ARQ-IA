@@ -10,8 +10,14 @@ attachRequestIdInterceptor(axios);
 const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
 const PAGE_HOST = (typeof window !== 'undefined' ? window.location.hostname : '').replace(/^www\./, '');
 const ONRENDER_API_URL = 'https://arq-ia-backend.onrender.com';
-const DEFAULT_API_URL =
-  !PAGE_HOST || PAGE_HOST === 'localhost' || PAGE_HOST === '127.0.0.1'
+const IS_CUSTOM_PROD =
+  Boolean(PAGE_HOST) &&
+  PAGE_HOST !== 'localhost' &&
+  PAGE_HOST !== '127.0.0.1' &&
+  !PAGE_HOST.includes('onrender.com');
+const DEFAULT_API_URL = IS_CUSTOM_PROD
+  ? `https://api.${PAGE_HOST}`
+  : !PAGE_HOST || PAGE_HOST === 'localhost' || PAGE_HOST === '127.0.0.1'
     ? 'http://localhost:8000'
     : `https://api.${PAGE_HOST}`;
 
@@ -25,9 +31,19 @@ function normalizeApiUrl(url) {
     .replace(/\/+$/, '');
 }
 
+function isOnrenderApiUrl(url) {
+  return normalizeApiUrl(url).includes('onrender.com');
+}
+
 function readSavedApiUrl() {
   try {
-    return normalizeApiUrl(sessionStorage.getItem('arqia_api_url'));
+    const saved = normalizeApiUrl(sessionStorage.getItem('arqia_api_url'));
+    // Brave/uBlock bloquean *.onrender.com (ERR_BLOCKED_BY_CLIENT). Descartar.
+    if (saved && isOnrenderApiUrl(saved)) {
+      sessionStorage.removeItem('arqia_api_url');
+      return '';
+    }
+    return saved;
   } catch {
     return '';
   }
@@ -35,7 +51,7 @@ function readSavedApiUrl() {
 
 function saveApiUrl(url) {
   const n = normalizeApiUrl(url);
-  if (!n) return;
+  if (!n || isOnrenderApiUrl(n)) return;
   try {
     sessionStorage.setItem('arqia_api_url', n);
   } catch {
@@ -43,25 +59,29 @@ function saveApiUrl(url) {
   }
 }
 
-/** Lista de hosts a probar. Prioriza api.{dominio}: muchos adblockers bloquean *.onrender.com. */
+/**
+ * Hosts a probar.
+ * En arq-ia.pro NUNCA incluir *.onrender.com: Brave/adblockers lo bloquean
+ * (ERR_BLOCKED_BY_CLIENT) aunque el backend esté sano en api.arq-ia.pro.
+ */
 function buildApiCandidates() {
   const list = [];
   const add = (u) => {
     const n = normalizeApiUrl(u);
-    if (n && !list.includes(n)) list.push(n);
+    if (!n) return;
+    if (IS_CUSTOM_PROD && isOnrenderApiUrl(n)) return;
+    if (!list.includes(n)) list.push(n);
   };
   const saved = readSavedApiUrl();
-  // Si el browser guardo onrender y suele estar bloqueado, preferir custom domain primero.
-  if (saved && !saved.includes('onrender.com')) add(saved);
-  if (PAGE_HOST && PAGE_HOST !== 'localhost' && PAGE_HOST !== '127.0.0.1' && !PAGE_HOST.includes('onrender.com')) {
-    add(`https://api.${PAGE_HOST}`);
-  }
+  if (saved) add(saved);
+  if (IS_CUSTOM_PROD) add(`https://api.${PAGE_HOST}`);
   add(DEFAULT_API_URL);
-  if (ENV_API_URL && !ENV_API_URL.includes('onrender.com')) add(ENV_API_URL);
-  if (saved && saved.includes('onrender.com')) add(saved);
-  // onrender al final (Brave/uBlock suelen bloquearlo → ERR_BLOCKED_BY_CLIENT)
-  add(ONRENDER_API_URL);
-  if (ENV_API_URL) add(ENV_API_URL);
+  if (ENV_API_URL && !isOnrenderApiUrl(ENV_API_URL)) add(ENV_API_URL);
+  // Solo en previews *.onrender.com del frontend tiene sentido el host API onrender.
+  if (!IS_CUSTOM_PROD) {
+    add(ONRENDER_API_URL);
+    if (ENV_API_URL) add(ENV_API_URL);
+  }
   return list.length ? list : [DEFAULT_API_URL];
 }
 
@@ -305,9 +325,15 @@ const getErrorMessage = (err, fallback, authMode = null) => {
   }
   if (detail) return detail;
   if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
-    return `La API no respondio a tiempo (${API_URL}). Espera unos segundos (cold start de Render) e intenta de nuevo.`;
+    return `La API no respondio a tiempo (${API_URL}). Espera unos segundos (cold start) e intenta de nuevo.`;
   }
   if (err?.message === 'Network Error') {
+    if (isOnrenderApiUrl(API_URL)) {
+      return (
+        'El navegador bloqueo la API (Brave/adblocker suele bloquear *.onrender.com). ' +
+        'Usa https://arq-ia.pro (api.arq-ia.pro) o desactiva escudos para este sitio.'
+      );
+    }
     return `No se pudo conectar con la API (${API_URL}). Reintenta; si sigue, el backend puede estar reiniciando.`;
   }
   return fallback;
@@ -652,8 +678,15 @@ function App() {
         // No reintentar uploads/OCR: pueden tardar y un retry duplicaria el cupo.
         if (method !== 'get' && /calcular|recalcular/.test(path)) throw err;
         cfg.__arqiaRetried = true;
-        const next = API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL) && !String(c).includes('onrender.com'));
-        const fallback = next || API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL));
+        // En prod custom domain no caer a onrender (Brave lo bloquea).
+        const next = API_CANDIDATES.find(
+          (c) => c && c !== (cfg.baseURL || API_URL) && !isOnrenderApiUrl(c),
+        );
+        const fallback =
+          next ||
+          (!IS_CUSTOM_PROD
+            ? API_CANDIDATES.find((c) => c && c !== (cfg.baseURL || API_URL))
+            : null);
         if (!fallback) throw err;
         API_URL = fallback;
         saveApiUrl(fallback);
@@ -668,7 +701,9 @@ function App() {
   const textoBarraPrecios = preciosInfo
     ? textoLineaPrecios(preciosInfo)
     : preciosListo
-      ? `Precios: API sin respuesta (${apiBase})`
+      ? isOnrenderApiUrl(apiBase)
+        ? 'Precios: API bloqueada por el navegador (*.onrender.com). Probá en arq-ia.pro o desactivá Brave Shields.'
+        : `Precios: API sin respuesta (${apiBase})`
       : 'Precios: conectando...';
 
   const activeProject = projects.find((project) => project.id === Number(activeProjectId));
