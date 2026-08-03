@@ -33,6 +33,8 @@ from infrastructure.observability import configure_observability, get_observabil
 from infrastructure.observability.http import ObservabilityMiddleware, metrics_router
 from infrastructure.runtime import configure_runtime, get_runtime
 from infrastructure.runtime.http import runtime_router
+from geometry.http import router as geometry_router
+from geometry.setup import bind_geometry_deps, run_geometry_migrations
 from mdo.http import router as mdo_router
 from mdo.perception_ingest import ingest_perception_to_mdo
 from mdo.service import MdoService
@@ -94,6 +96,7 @@ app = FastAPI(title="ARQ-IA API")
 app.include_router(metrics_router)
 app.include_router(runtime_router)
 app.include_router(mdo_router)
+app.include_router(geometry_router)
 
 allowed_origins = [
     origin.strip()
@@ -345,6 +348,16 @@ def startup():
             module="startup",
             error=str(exc),
         )
+    # Geometry: migraciones formales Alembic (proyección regenerable). Fallo no tumba el proceso.
+    try:
+        run_geometry_migrations(DATABASE_URL)
+    except Exception as exc:
+        get_observability().warning(
+            "startup geometry migraciones",
+            feature="geometry",
+            module="startup",
+            error=str(exc),
+        )
 
 
 def ensure_process_result_meta_column():
@@ -514,8 +527,14 @@ def project_belongs_to_studio(db: Session, project_id: int, studio_id: int) -> b
     return bool(project and project.studio_id == studio_id)
 
 
-# MDO HTTP deps (composition root). Migrations corren en startup.
+# MDO + Geometry HTTP deps (composition root). Migrations corren en startup.
 bind_mdo_deps(
+    get_db=get_db,
+    current_user=current_user,
+    require_can_edit=require_can_edit,
+    project_belongs_to_studio=project_belongs_to_studio,
+)
+bind_geometry_deps(
     get_db=get_db,
     current_user=current_user,
     require_can_edit=require_can_edit,
