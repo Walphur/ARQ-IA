@@ -30,4 +30,4 @@ cd backend
 DATABASE_URL=... python3 -c "from mdo.setup import run_mdo_migrations; run_mdo_migrations('$DATABASE_URL')"
 ```
 
-Startup de la app invocará `run_mdo_migrations` a partir de Fase 2 (wiring).
+Startup de la app invoca `run_mdo_migrations` (Fase 2+). Legacy sigue con `create_all`.
