@@ -33,6 +33,8 @@ from infrastructure.observability import configure_observability, get_observabil
 from infrastructure.observability.http import ObservabilityMiddleware, metrics_router
 from infrastructure.runtime import configure_runtime, get_runtime
 from infrastructure.runtime.http import runtime_router
+from mdo.http import router as mdo_router
+from mdo.setup import bind_mdo_deps, run_mdo_migrations
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -89,6 +91,7 @@ configure_runtime(engine)
 app = FastAPI(title="ARQ-IA API")
 app.include_router(metrics_router)
 app.include_router(runtime_router)
+app.include_router(mdo_router)
 
 allowed_origins = [
     origin.strip()
@@ -317,6 +320,7 @@ def get_db():
 def startup():
     """Migraciones best-effort: no tumbar el proceso si la DB tarda o falla un ALTER."""
     try:
+        # Legacy identity/billing/process: create_all + ensures ad-hoc.
         Base.metadata.create_all(bind=engine)
         ensure_process_result_meta_column()
         ensure_studio_mp_preapproval_column()
@@ -326,6 +330,16 @@ def startup():
         get_observability().warning(
             "startup schema/migracion",
             feature="platform",
+            module="startup",
+            error=str(exc),
+        )
+    # MDO: migraciones formales Alembic (no create_all). Fallo no tumba el proceso.
+    try:
+        run_mdo_migrations(DATABASE_URL)
+    except Exception as exc:
+        get_observability().warning(
+            "startup mdo migraciones",
+            feature="mdo",
             module="startup",
             error=str(exc),
         )
@@ -491,6 +505,20 @@ def require_can_bill(user: User) -> User:
             detail="Solo el dueño del estudio puede gestionar la suscripcion.",
         )
     return user
+
+
+def project_belongs_to_studio(db: Session, project_id: int, studio_id: int) -> bool:
+    project = db.get(Project, project_id)
+    return bool(project and project.studio_id == studio_id)
+
+
+# MDO HTTP deps (composition root). Migrations corren en startup.
+bind_mdo_deps(
+    get_db=get_db,
+    current_user=current_user,
+    require_can_edit=require_can_edit,
+    project_belongs_to_studio=project_belongs_to_studio,
+)
 
 
 def serialize_process(process: Process) -> dict:

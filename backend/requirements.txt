@@ -14,3 +14,5 @@ opentelemetry-api==1.29.0
 opentelemetry-sdk==1.29.0
 opentelemetry-exporter-otlp-proto-http==1.29.0
 httpx==0.28.1
+# MDO E02-F01 — migraciones formales del dominio (tablas mdo_*)
+alembic==1.14.0
