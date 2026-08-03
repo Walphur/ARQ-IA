@@ -1,4 +1,4 @@
-"""API HTTP `/v1/mdo/*` — crece por fases. Fases 2–3: versions + espacial."""
+"""API HTTP `/v1/mdo/*` — E02-F01 (fases 2–5)."""
 
 from __future__ import annotations
 
@@ -149,6 +149,9 @@ def get_tree(version_id: str, user=Depends(_user), db: Session = Depends(_db)):
         "spaces": [schemas.serialize_space(x) for x in tree["spaces"]],
         "disciplines": [schemas.serialize_discipline(x) for x in tree["disciplines"]],
         "elements": [schemas.serialize_element(x) for x in tree["elements"]],
+        "parameter_sets": [
+            schemas.serialize_parameter_set(x) for x in tree["parameter_sets"]
+        ],
     }
 
 
@@ -390,3 +393,32 @@ def delete_element(element_id: str, user=Depends(_user), db: Session = Depends(_
     except Exception as exc:
         raise _map_error(exc) from exc
     return schemas.serialize_element(el)
+
+
+@router.put("/versions/{version_id}/parameter-sets")
+def upsert_parameter_set(
+    version_id: str,
+    body: schemas.ParameterSetUpsert,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        ps = _svc(user, db).upsert_parameter_set(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_parameter_set(ps)
+
+
+@router.delete("/parameter-sets/{parameter_set_id}")
+def delete_parameter_set(
+    parameter_set_id: str,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        ps = _svc(user, db).delete_parameter_set(parameter_set_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_parameter_set(ps)

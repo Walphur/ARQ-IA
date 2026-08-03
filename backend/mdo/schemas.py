@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -108,6 +108,15 @@ class ElementUpdate(BaseModel):
     level_id: Optional[str] = None
     space_id: Optional[str] = None
     discipline_id: Optional[str] = None
+
+
+class ParameterSetUpsert(ExternalIdMixin):
+    owner_kind: str
+    owner_id: str
+    code: Optional[str] = Field(default=None, max_length=80)
+    display_name: Optional[str] = Field(default=None, max_length=180)
+    schema_version: str = "1"
+    data: dict[str, Any] = Field(default_factory=lambda: {"params": {}, "metadata": {}})
 
 
 def _dt(value: Optional[datetime]) -> Optional[str]:
@@ -249,6 +258,27 @@ def serialize_element(el) -> dict:
         "created_by": el.created_by,
         "updated_by": el.updated_by,
         "deleted_at": _dt(el.deleted_at),
+    }
+
+
+def serialize_parameter_set(ps) -> dict:
+    return {
+        "id": ps.id,
+        "version_id": ps.version_id,
+        "studio_id": ps.studio_id,
+        "project_id": ps.project_id,
+        "owner_kind": ps.owner_kind,
+        "owner_id": ps.owner_id,
+        "code": ps.code,
+        "display_name": ps.display_name,
+        "external_id": ps.external_id,
+        "schema_version": ps.schema_version,
+        "data": ps.data,
+        "created_at": _dt(ps.created_at),
+        "updated_at": _dt(ps.updated_at),
+        "created_by": ps.created_by,
+        "updated_by": ps.updated_by,
+        "deleted_at": _dt(ps.deleted_at),
     }
 
 

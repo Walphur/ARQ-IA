@@ -1,4 +1,4 @@
-"""Casos de uso MDO — Fases 2–4: versions, espacial, Discipline/Element."""
+"""Casos de uso MDO — Fases 2–5: versions, espacial, Discipline/Element, ParameterSet."""
 
 from __future__ import annotations
 
@@ -7,13 +7,19 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
-from mdo.enums import MUTABLE_VERSION_STATUSES, DomainEventType, VersionStatus
+from mdo.enums import (
+    MUTABLE_VERSION_STATUSES,
+    DomainEventType,
+    ParameterOwnerKind,
+    VersionStatus,
+)
 from mdo.models import (
     Building,
     Discipline,
     DomainEvent,
     Element,
     Level,
+    ParameterSet,
     ProjectVersion,
     Site,
     Space,
@@ -21,6 +27,7 @@ from mdo.models import (
 from mdo.typing_rules import (
     MdoValidationError,
     normalize_discipline_code,
+    normalize_parameter_set_data,
     validate_element_classification,
 )
 
@@ -181,6 +188,7 @@ class MdoService:
             "spaces": self._alive(Space, version.id),
             "disciplines": self._alive(Discipline, version.id),
             "elements": self._alive(Element, version.id),
+            "parameter_sets": self._alive(ParameterSet, version.id),
         }
 
     def _alive(self, model, version_id: str):
@@ -639,6 +647,95 @@ class MdoService:
         self.db.commit()
         self.db.refresh(el)
         return el
+
+    # --- ParameterSet (solo params/metadata) ---
+    def upsert_parameter_set(self, version_id: str, data) -> ParameterSet:
+        version = self._get_version(version_id)
+        self._require_mutable(version)
+        try:
+            owner_kind = ParameterOwnerKind(data.owner_kind).value
+        except ValueError as exc:
+            raise MdoValidationError(
+                f"owner_kind inválido. Valores: {[k.value for k in ParameterOwnerKind]}"
+            ) from exc
+        self._assert_owner_exists(version.id, owner_kind, data.owner_id)
+        normalized = normalize_parameter_set_data(data.data)
+        existing = (
+            self.db.query(ParameterSet)
+            .filter(
+                ParameterSet.version_id == version.id,
+                ParameterSet.owner_kind == owner_kind,
+                ParameterSet.owner_id == data.owner_id,
+                ParameterSet.code == data.code,
+                ParameterSet.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if existing:
+            existing.data = normalized
+            existing.display_name = data.display_name
+            existing.external_id = data.external_id
+            existing.schema_version = data.schema_version
+            self._touch(existing)
+            ps = existing
+        else:
+            ps = ParameterSet(
+                version_id=version.id,
+                studio_id=version.studio_id,
+                project_id=version.project_id,
+                owner_kind=owner_kind,
+                owner_id=data.owner_id,
+                code=data.code,
+                display_name=data.display_name,
+                external_id=data.external_id,
+                schema_version=data.schema_version,
+                data=normalized,
+                created_by=self.user_id,
+                updated_by=self.user_id,
+            )
+            self.db.add(ps)
+            self.db.flush()
+        self._emit(
+            DomainEventType.PARAMETER_SET_UPSERTED,
+            project_id=version.project_id,
+            version_id=version.id,
+            payload={
+                "parameter_set_id": ps.id,
+                "owner_kind": owner_kind,
+                "owner_id": data.owner_id,
+            },
+        )
+        self.db.commit()
+        self.db.refresh(ps)
+        return ps
+
+    def delete_parameter_set(self, parameter_set_id: str) -> ParameterSet:
+        ps = self._get_owned(ParameterSet, parameter_set_id)
+        self._require_mutable(self._get_version(ps.version_id))
+        self._soft_delete(ps)
+        self._emit(
+            DomainEventType.PARAMETER_SET_DELETED,
+            project_id=ps.project_id,
+            version_id=ps.version_id,
+            payload={"parameter_set_id": ps.id},
+        )
+        self.db.commit()
+        self.db.refresh(ps)
+        return ps
+
+    def _assert_owner_exists(self, version_id: str, owner_kind: str, owner_id: str) -> None:
+        mapping = {
+            ParameterOwnerKind.SITE.value: Site,
+            ParameterOwnerKind.BUILDING.value: Building,
+            ParameterOwnerKind.LEVEL.value: Level,
+            ParameterOwnerKind.SPACE.value: Space,
+            ParameterOwnerKind.DISCIPLINE.value: Discipline,
+            ParameterOwnerKind.ELEMENT.value: Element,
+        }
+        model = mapping[owner_kind]
+        owner = self._get_owned(model, owner_id)
+        if owner.version_id != version_id:
+            raise MdoValidationError("owner_id no pertenece a esta versión.")
 
 
 __all__ = [
