@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.jpg';
+import { attachRequestIdInterceptor } from './infrastructure/requestId';
+
+attachRequestIdInterceptor(axios);
 
 const ENV_API_URL = (process.env.REACT_APP_API_URL || '').trim().replace(/\/+$/, '');
 const PAGE_HOST = (typeof window !== 'undefined' ? window.location.hostname : '').replace(/^www\./, '');

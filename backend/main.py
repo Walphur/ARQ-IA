@@ -29,6 +29,8 @@ from billing_mp import (
     verify_webhook_signature,
 )
 from email_service import email_configured, send_invite_email, send_password_reset_email
+from infrastructure.observability import configure_observability, get_observability
+from infrastructure.observability.http import ObservabilityMiddleware, metrics_router
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -60,9 +62,15 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 DEMO_RATE_WINDOW_SEC = int(os.getenv("DEMO_RATE_WINDOW_SEC", "3600"))
 DEMO_RATE_MAX = int(os.getenv("DEMO_RATE_MAX", "30"))
 
+configure_observability()
+_obs = get_observability()
 
 if os.getenv("RENDER") and DATABASE_URL.startswith("sqlite"):
-    print("[WARN] DATABASE_URL no configurada en Render: usando SQLite efimera. Configura PostgreSQL para persistencia.")
+    _obs.warning(
+        "DATABASE_URL no configurada en Render: usando SQLite efimera",
+        feature="platform",
+        module="startup",
+    )
 
 _engine_kwargs = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("postgresql"):
@@ -75,6 +83,7 @@ Base = declarative_base()
 JsonColumn = JSONB if DATABASE_URL.startswith("postgresql") else JSON
 
 app = FastAPI(title="ARQ-IA API")
+app.include_router(metrics_router)
 
 allowed_origins = [
     origin.strip()
@@ -97,6 +106,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost for request_id / traces / RED (Starlette: last added runs first).
+app.add_middleware(ObservabilityMiddleware)
 
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
@@ -307,7 +318,12 @@ def startup():
         ensure_studio_usage_columns()
         ensure_usage_events_backfill()
     except Exception as exc:
-        print(f"[WARN] startup schema/migracion: {exc}")
+        get_observability().warning(
+            "startup schema/migracion",
+            feature="platform",
+            module="startup",
+            error=str(exc),
+        )
 
 
 def ensure_process_result_meta_column():
@@ -384,7 +400,12 @@ def ensure_usage_events_backfill():
                     db.add(studio)
             db.commit()
         except Exception as exc:
-            print(f"[WARN] usage_events backfill: {exc}")
+            get_observability().warning(
+                "usage_events backfill",
+                feature="platform",
+                module="startup",
+                error=str(exc),
+            )
         finally:
             db.close()
 
