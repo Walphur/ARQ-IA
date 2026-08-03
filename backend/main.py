@@ -34,6 +34,8 @@ from infrastructure.observability.http import ObservabilityMiddleware, metrics_r
 from infrastructure.runtime import configure_runtime, get_runtime
 from infrastructure.runtime.http import runtime_router
 from mdo.http import router as mdo_router
+from mdo.perception_ingest import ingest_perception_to_mdo
+from mdo.service import MdoService
 from mdo.setup import bind_mdo_deps, run_mdo_migrations
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
@@ -1127,6 +1129,44 @@ def _result_meta_from_ia(resultados: dict, sistema: str, altura: float) -> dict:
     }
 
 
+def _try_ingest_perception_mdo(
+    db: Session,
+    *,
+    user: User,
+    project: Project,
+    process_id: int,
+    resultados: dict,
+) -> dict:
+    """Strangler E03-F01: dual-write Perception → MDO. Nunca tumba el Process legacy."""
+    detections = resultados.get("detections")
+    if not isinstance(detections, dict):
+        return {"ok": False, "skipped": True, "reason": "no_detections"}
+    try:
+        svc = MdoService(
+            db,
+            studio_id=user.studio_id,
+            user_id=user.id,
+            project_belongs_to_studio=project_belongs_to_studio,
+        )
+        return ingest_perception_to_mdo(
+            svc,
+            project_id=project.id,
+            process_id=process_id,
+            detections=detections,
+            project_name=project.name or "Obra",
+        )
+    except Exception as exc:
+        get_observability().warning(
+            "perception→mdo ingest falló (Process legacy intacto)",
+            feature="mdo",
+            module="perception_ingest",
+            error=str(exc),
+            project_id=project.id,
+            process_id=process_id,
+        )
+        return {"ok": False, "error": str(exc)}
+
+
 @app.post("/projects/{project_id}/calcular")
 async def calcular_en_obra(
     project_id: int,
@@ -1186,6 +1226,15 @@ async def calcular_en_obra(
     )
     db.add(process)
     db.flush()  # obtiene process.id
+    mdo_meta = _try_ingest_perception_mdo(
+        db,
+        user=user,
+        project=project,
+        process_id=process.id,
+        resultados=resultados,
+    )
+    result_meta = {**result_meta, "mdo": mdo_meta}
+    process.result_meta = result_meta
     consume_usage(db, user.studio, process_id=process.id)
     db.commit()
     db.refresh(process)
@@ -1243,7 +1292,15 @@ async def recalcular_proceso(
     process.items = resultados["items"]
     process.total = float(resultados.get("total") or 0)
     process.escala_detectada = resultados.get("escala_detectada")
-    process.result_meta = _result_meta_from_ia(resultados, sistema, altura)
+    result_meta = _result_meta_from_ia(resultados, sistema, altura)
+    mdo_meta = _try_ingest_perception_mdo(
+        db,
+        user=user,
+        project=project,
+        process_id=process.id,
+        resultados=resultados,
+    )
+    process.result_meta = {**result_meta, "mdo": mdo_meta}
     db.add(process)
     db.commit()
     db.refresh(process)

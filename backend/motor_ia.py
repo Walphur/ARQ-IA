@@ -463,6 +463,16 @@ def procesar_plano_ia(
 
     P = obtener_precios_en_vivo()
     res = {"tipo": tipo_plano, "items": [], "total": 0, "imagen": "", "escala_detectada": escala_leida}
+    # Hechos geométricos / tipológicos para MDO (E03-F01). Sin precios ni costos.
+    detections = {
+        "schema_version": "1",
+        "tipo_plano": tipo_plano,
+        "escala_m_per_px": float(escala),
+        "metros_referencia": float(metros_reales),
+        "altura_muro_m": float(altura),
+        "sistema_muro": sistema_muro,
+        "facts": {},
+    }
     img_audit = img.copy()
 
     # ==========================================
@@ -480,6 +490,13 @@ def procesar_plano_ia(
         mask_gris = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([179, 30, 230]))
         mask_naranja = cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))
         m2_pisos = (np.sum(mask_gris > 0) + np.sum(mask_naranja > 0)) * escala_m2
+
+        detections["facts"] = {
+            "wall_face_area_m2": float(m2_muros),
+            "floor_area_m2": float(m2_pisos),
+            "openings_count": int(unid_aberturas),
+            "wall_height_m": float(altura),
+        }
 
         precio_cem_kg = P.get('mat_cemento_25kg', 0) / 25
         precio_cal_kg = P.get('mat_cal_25kg', 0) / 25
@@ -565,6 +582,15 @@ def procesar_plano_ia(
         tot_bocas = puntas_a + puntas_m
         tot_ml_agua = ml_azul + ml_magenta
 
+        detections["facts"] = {
+            "cold_water_ml": float(ml_azul),
+            "hot_water_ml": float(ml_magenta),
+            "sewage_ml": float(ml_marron),
+            "water_fittings_elbows": int(tot_codos),
+            "water_fittings_tees": int(tot_tees),
+            "water_outlets": int(tot_bocas),
+        }
+
         if tot_ml_agua > 0:
             res["items"].append(_li(f"Mat: Caño Termo ({tot_ml_agua:.1f}m)", tot_ml_agua * P.get("AGUA-MAT-01", 0), "Mascaras azul+magenta, thinning; metros lineales x AGUA-MAT-01."))
             res["items"].append(_li(f"Mat: Codos ({tot_codos}u)", tot_codos * P.get("AGUA-ACC-CODO", 0), "Grafo sobre esqueleto agua fria/caliente; nodos tipo codo."))
@@ -603,6 +629,11 @@ def procesar_plano_ia(
         # 3. Calculamos los Metros de caño 
         # Usamos thinning para medir la longitud exacta por el eje central
         ml_corrugado = np.sum(cv2.ximgproc.thinning(mask_amarilla) > 0) * escala
+
+        detections["facts"] = {
+            "electrical_conduit_ml": float(ml_corrugado),
+            "electrical_boxes_count": int(cant_bocas),
+        }
         
         if ml_corrugado > 0:
             res["items"].append(_li(f"Mat: Caño Corrugado ({ml_corrugado:.1f}m)", ml_corrugado * P.get("LUZ-MAT-01", 0), "Mascara amarilla electrica + thinning x LUZ-MAT-01."))
@@ -620,6 +651,10 @@ def procesar_plano_ia(
         
         # Calcular superficie pintada en m2
         m2_techo = np.sum(mask_violeta > 0) * escala_m2
+
+        detections["facts"] = {
+            "roof_area_m2": float(m2_techo),
+        }
         
         if m2_techo > 0:
             # Desglose matemático inteligente
@@ -648,13 +683,21 @@ def procesar_plano_ia(
             lotes_validos = [c for c in conts if cv2.contourArea(c) > 500]
             # Ordenar por la coordenada X (para que el Lote 1 sea el de la izquierda)
             lotes_validos = sorted(lotes_validos, key=lambda c: cv2.boundingRect(c)[0])
-            
+
+            lot_facts = []
             for idx, c_terreno in enumerate(lotes_validos):
                 numero_lote = idx + 1
                 
                 # Área y Perímetro
                 area_m2 = cv2.contourArea(c_terreno) * escala_m2
                 perimetro_m = cv2.arcLength(c_terreno, True) * escala
+                lot_facts.append(
+                    {
+                        "lot_number": int(numero_lote),
+                        "area_m2": float(area_m2),
+                        "perimeter_m": float(perimetro_m),
+                    }
+                )
                 
                 res["items"].append(_li(f"🟩 LOTE {numero_lote} - Área", f"{area_m2:.2f} m²", "Contorno gris oscuro; area en px x escala_m2."))
                 res["items"].append(_li(f"📏 LOTE {numero_lote} - Perímetro", f"{perimetro_m:.2f} m", "Perimetro del contorno x escala lineal."))
@@ -682,6 +725,8 @@ def procesar_plano_ia(
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
                     cv2.putText(img_audit, str(numero_lote), (cx-10, cy+10), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 4)
+
+            detections["facts"] = {"lots": lot_facts}
                     
     # --- RENDER FINAL Y CÁLCULO DE TOTALES ---
     if px_v > 0:
@@ -719,6 +764,7 @@ def procesar_plano_ia(
     res["altura_muro"] = float(altura)
     res["sistema_muro"] = sistema_muro
     res["precios_info"] = get_precios_info()
+    res["detections"] = detections
 
     # FIX DEL BUG 500: Solo suma plata si NO es un terreno
     if tipo_plano != "terreno":

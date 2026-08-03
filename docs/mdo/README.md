@@ -30,6 +30,22 @@ ADR: [ADR-006](../adr/ADR-006-mdo-core-foundations.md) · [LIMITS](./LIMITS.md) 
 
 Composition root: `main.py` importa MDO. MDO **no** importa `main`, `motor_ia`, materials, costs ni frontend.
 
-## Process
+## Relación con Process
 
-`Process` sigue siendo SoT legacy del wedge. MDO no lo lee ni escribe en F01.
+`Process` sigue siendo el SoT file-centric del wedge actual.
+
+Desde **E03-F01**, `/projects/{id}/calcular` hace dual-write:
+
+1. Process.items + total (legacy, inalterado para UI/cupo)
+2. MDO Building/Level/Space/Element vía `perception_ingest` (best-effort)
+
+Ver [ADR-007](../adr/ADR-007-perception-mdo-strangler.md).
+
+## Perception → MDO
+
+| Pieza | Rol |
+|-------|-----|
+| `motor_ia.detections` | Hechos geométricos sin precios |
+| `mdo/perception_map.py` | Mapper puro |
+| `mdo/perception_ingest.py` | Persistencia MdoService |
+| `main._try_ingest_perception_mdo` | Composition root + aislamiento de fallos |
