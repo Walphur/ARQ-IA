@@ -1,4 +1,4 @@
-"""API HTTP `/v1/mdo/*` — crece por fases. Fase 2: versions."""
+"""API HTTP `/v1/mdo/*` — crece por fases. Fases 2–3: versions + espacial."""
 
 from __future__ import annotations
 
@@ -133,3 +133,178 @@ def list_events(
     except Exception as exc:
         raise _map_error(exc) from exc
     return {"items": [schemas.serialize_event(e) for e in events]}
+
+
+@router.get("/versions/{version_id}/tree")
+def get_tree(version_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    try:
+        tree = _svc(user, db).get_tree(version_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return {
+        "version": schemas.serialize_version(tree["version"]),
+        "sites": [schemas.serialize_site(x) for x in tree["sites"]],
+        "buildings": [schemas.serialize_building(x) for x in tree["buildings"]],
+        "levels": [schemas.serialize_level(x) for x in tree["levels"]],
+        "spaces": [schemas.serialize_space(x) for x in tree["spaces"]],
+    }
+
+
+@router.post("/versions/{version_id}/sites")
+def create_site(
+    version_id: str,
+    body: schemas.SiteCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        site = _svc(user, db).create_site(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_site(site)
+
+
+@router.patch("/sites/{site_id}")
+def update_site(
+    site_id: str,
+    body: schemas.SiteUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        site = _svc(user, db).update_site(site_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_site(site)
+
+
+@router.delete("/sites/{site_id}")
+def delete_site(site_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        site = _svc(user, db).delete_site(site_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_site(site)
+
+
+@router.post("/versions/{version_id}/buildings")
+def create_building(
+    version_id: str,
+    body: schemas.BuildingCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        building = _svc(user, db).create_building(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_building(building)
+
+
+@router.patch("/buildings/{building_id}")
+def update_building(
+    building_id: str,
+    body: schemas.BuildingUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        building = _svc(user, db).update_building(building_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_building(building)
+
+
+@router.delete("/buildings/{building_id}")
+def delete_building(building_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        building = _svc(user, db).delete_building(building_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_building(building)
+
+
+@router.post("/versions/{version_id}/levels")
+def create_level(
+    version_id: str,
+    body: schemas.LevelCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        level = _svc(user, db).create_level(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_level(level)
+
+
+@router.patch("/levels/{level_id}")
+def update_level(
+    level_id: str,
+    body: schemas.LevelUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        level = _svc(user, db).update_level(level_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_level(level)
+
+
+@router.delete("/levels/{level_id}")
+def delete_level(level_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        level = _svc(user, db).delete_level(level_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_level(level)
+
+
+@router.post("/versions/{version_id}/spaces")
+def create_space(
+    version_id: str,
+    body: schemas.SpaceCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        space = _svc(user, db).create_space(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_space(space)
+
+
+@router.patch("/spaces/{space_id}")
+def update_space(
+    space_id: str,
+    body: schemas.SpaceUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        space = _svc(user, db).update_space(space_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_space(space)
+
+
+@router.delete("/spaces/{space_id}")
+def delete_space(space_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        space = _svc(user, db).delete_space(space_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_space(space)
