@@ -3,6 +3,7 @@ import axios from 'axios';
 import './App.css';
 import bannerFondo from './banner-fondo.jpg';
 import { attachRequestIdInterceptor } from './infrastructure/requestId';
+import DegradationBanner from './components/DegradationBanner';
 
 attachRequestIdInterceptor(axios);
 
@@ -1549,6 +1550,7 @@ function App() {
   if (!token && demoMode) {
     return (
       <div className="App demo-app">
+        <DegradationBanner apiBase={API_URL} />
         <header className="topbar demo-topbar" style={{ backgroundImage: `linear-gradient(to bottom, rgba(10,10,10,0.82), rgba(10,10,10,0.98)), url(${bannerFondo})` }}>
           <div className="brand-block">
             <img src="/logo.png" alt={SITE_NAME} className="logo-img" />
@@ -1945,6 +1947,7 @@ function App() {
 
   return (
     <div className="App">
+      <DegradationBanner apiBase={API_URL} />
       <header className="topbar" style={{ backgroundImage: `linear-gradient(to bottom, rgba(10,10,10,0.82), rgba(10,10,10,0.98)), url(${bannerFondo})` }}>
         <div className="brand-block">
           <img src="/logo.png" alt={SITE_NAME} className="logo-img" />

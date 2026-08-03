@@ -54,5 +54,14 @@ class MetricsPort(Protocol):
 
     def observe_latency(self, seconds: float, *, route_template: str, status_class: str) -> None: ...
 
+    def set_component_status(self, component: str, status: str) -> None:
+        """Extensible component health gauge (ok|fail|skipped|timeout|unknown)."""
+
+    def set_ready(self, value: bool) -> None:
+        """Aggregate readiness gauge (platform_ready)."""
+
+    def set_platform_mode(self, mode: str) -> None:
+        """Platform mode gauge (normal|degraded|maintenance|readonly)."""
+
     def render_exposition(self) -> str:
         """Vendor-neutral exposition text (Prometheus format allowed only inside adapter)."""

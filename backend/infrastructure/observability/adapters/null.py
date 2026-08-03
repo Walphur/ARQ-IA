@@ -42,6 +42,15 @@ class NullMetrics:
     def observe_latency(self, seconds: float, *, route_template: str, status_class: str) -> None:
         return None
 
+    def set_component_status(self, component: str, status: str) -> None:
+        return None
+
+    def set_ready(self, value: bool) -> None:
+        return None
+
+    def set_platform_mode(self, mode: str) -> None:
+        return None
+
     def render_exposition(self) -> str:
         return "# observability metrics disabled\n"
 
