@@ -77,6 +77,39 @@ class SpaceUpdate(BaseModel):
     area_m2: Optional[float] = None
 
 
+class DisciplineCreate(ExternalIdMixin):
+    code: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=180)
+    description: Optional[str] = None
+
+
+class DisciplineUpdate(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=180)
+    external_id: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = None
+
+
+class ElementCreate(ExternalIdMixin):
+    discipline_code: str = Field(min_length=1, max_length=64)
+    element_type: str = Field(min_length=1, max_length=120)
+    display_name: str = Field(min_length=1, max_length=180)
+    code: Optional[str] = Field(default=None, max_length=80)
+    level_id: Optional[str] = None
+    space_id: Optional[str] = None
+    discipline_id: Optional[str] = None
+
+
+class ElementUpdate(BaseModel):
+    discipline_code: Optional[str] = Field(default=None, max_length=64)
+    element_type: Optional[str] = Field(default=None, max_length=120)
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=180)
+    code: Optional[str] = Field(default=None, max_length=80)
+    external_id: Optional[str] = Field(default=None, max_length=120)
+    level_id: Optional[str] = None
+    space_id: Optional[str] = None
+    discipline_id: Optional[str] = None
+
+
 def _dt(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat() if value else None
 
@@ -176,6 +209,46 @@ def serialize_space(sp) -> dict:
         "created_by": sp.created_by,
         "updated_by": sp.updated_by,
         "deleted_at": _dt(sp.deleted_at),
+    }
+
+
+def serialize_discipline(d) -> dict:
+    return {
+        "id": d.id,
+        "version_id": d.version_id,
+        "studio_id": d.studio_id,
+        "project_id": d.project_id,
+        "code": d.code,
+        "display_name": d.display_name,
+        "external_id": d.external_id,
+        "description": d.description,
+        "created_at": _dt(d.created_at),
+        "updated_at": _dt(d.updated_at),
+        "created_by": d.created_by,
+        "updated_by": d.updated_by,
+        "deleted_at": _dt(d.deleted_at),
+    }
+
+
+def serialize_element(el) -> dict:
+    return {
+        "id": el.id,
+        "version_id": el.version_id,
+        "studio_id": el.studio_id,
+        "project_id": el.project_id,
+        "level_id": el.level_id,
+        "space_id": el.space_id,
+        "discipline_id": el.discipline_id,
+        "discipline_code": el.discipline_code,
+        "element_type": el.element_type,
+        "code": el.code,
+        "display_name": el.display_name,
+        "external_id": el.external_id,
+        "created_at": _dt(el.created_at),
+        "updated_at": _dt(el.updated_at),
+        "created_by": el.created_by,
+        "updated_by": el.updated_by,
+        "deleted_at": _dt(el.deleted_at),
     }
 
 

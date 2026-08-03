@@ -147,6 +147,8 @@ def get_tree(version_id: str, user=Depends(_user), db: Session = Depends(_db)):
         "buildings": [schemas.serialize_building(x) for x in tree["buildings"]],
         "levels": [schemas.serialize_level(x) for x in tree["levels"]],
         "spaces": [schemas.serialize_space(x) for x in tree["spaces"]],
+        "disciplines": [schemas.serialize_discipline(x) for x in tree["disciplines"]],
+        "elements": [schemas.serialize_element(x) for x in tree["elements"]],
     }
 
 
@@ -308,3 +310,83 @@ def delete_space(space_id: str, user=Depends(_user), db: Session = Depends(_db))
     except Exception as exc:
         raise _map_error(exc) from exc
     return schemas.serialize_space(space)
+
+
+@router.post("/versions/{version_id}/disciplines")
+def create_discipline(
+    version_id: str,
+    body: schemas.DisciplineCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        disc = _svc(user, db).create_discipline(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_discipline(disc)
+
+
+@router.patch("/disciplines/{discipline_id}")
+def update_discipline(
+    discipline_id: str,
+    body: schemas.DisciplineUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        disc = _svc(user, db).update_discipline(discipline_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_discipline(disc)
+
+
+@router.delete("/disciplines/{discipline_id}")
+def delete_discipline(discipline_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        disc = _svc(user, db).delete_discipline(discipline_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_discipline(disc)
+
+
+@router.post("/versions/{version_id}/elements")
+def create_element(
+    version_id: str,
+    body: schemas.ElementCreate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        el = _svc(user, db).create_element(version_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_element(el)
+
+
+@router.patch("/elements/{element_id}")
+def update_element(
+    element_id: str,
+    body: schemas.ElementUpdate,
+    user=Depends(_user),
+    db: Session = Depends(_db),
+):
+    _require_can_edit(user)
+    try:
+        el = _svc(user, db).update_element(element_id, body)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_element(el)
+
+
+@router.delete("/elements/{element_id}")
+def delete_element(element_id: str, user=Depends(_user), db: Session = Depends(_db)):
+    _require_can_edit(user)
+    try:
+        el = _svc(user, db).delete_element(element_id)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+    return schemas.serialize_element(el)

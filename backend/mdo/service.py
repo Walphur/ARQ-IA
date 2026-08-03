@@ -1,4 +1,4 @@
-"""Casos de uso MDO — Fases 2–3: versions + jerarquía espacial."""
+"""Casos de uso MDO — Fases 2–4: versions, espacial, Discipline/Element."""
 
 from __future__ import annotations
 
@@ -8,8 +8,21 @@ from typing import Any, Callable, Optional
 from sqlalchemy.orm import Session
 
 from mdo.enums import MUTABLE_VERSION_STATUSES, DomainEventType, VersionStatus
-from mdo.models import Building, DomainEvent, Level, ProjectVersion, Site, Space
-from mdo.typing_rules import MdoValidationError
+from mdo.models import (
+    Building,
+    Discipline,
+    DomainEvent,
+    Element,
+    Level,
+    ProjectVersion,
+    Site,
+    Space,
+)
+from mdo.typing_rules import (
+    MdoValidationError,
+    normalize_discipline_code,
+    validate_element_classification,
+)
 
 
 class MdoNotFoundError(LookupError):
@@ -166,6 +179,8 @@ class MdoService:
             "buildings": self._alive(Building, version.id),
             "levels": self._alive(Level, version.id),
             "spaces": self._alive(Space, version.id),
+            "disciplines": self._alive(Discipline, version.id),
+            "elements": self._alive(Element, version.id),
         }
 
     def _alive(self, model, version_id: str):
@@ -446,6 +461,184 @@ class MdoService:
         self.db.commit()
         self.db.refresh(space)
         return space
+
+    # --- Discipline (reemplaza System ambiguo) ---
+    def create_discipline(self, version_id: str, data) -> Discipline:
+        version = self._get_version(version_id)
+        self._require_mutable(version)
+        code = normalize_discipline_code(data.code)
+        dup = (
+            self.db.query(Discipline)
+            .filter(
+                Discipline.version_id == version.id,
+                Discipline.code == code,
+                Discipline.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if dup:
+            raise MdoConflictError(f"Ya existe la disciplina '{code}' en esta versión.")
+        disc = Discipline(
+            version_id=version.id,
+            studio_id=version.studio_id,
+            project_id=version.project_id,
+            code=code,
+            display_name=data.display_name,
+            external_id=data.external_id,
+            description=data.description,
+            created_by=self.user_id,
+            updated_by=self.user_id,
+        )
+        self.db.add(disc)
+        self.db.flush()
+        self._emit(
+            DomainEventType.DISCIPLINE_CREATED,
+            project_id=version.project_id,
+            version_id=version.id,
+            payload={"discipline_id": disc.id, "code": code},
+        )
+        self.db.commit()
+        self.db.refresh(disc)
+        return disc
+
+    def update_discipline(self, discipline_id: str, data) -> Discipline:
+        disc = self._get_owned(Discipline, discipline_id)
+        self._require_mutable(self._get_version(disc.version_id))
+        self._apply_updates(disc, data, ("display_name", "external_id", "description"))
+        self._emit(
+            DomainEventType.DISCIPLINE_UPDATED,
+            project_id=disc.project_id,
+            version_id=disc.version_id,
+            payload={"discipline_id": disc.id},
+        )
+        self.db.commit()
+        self.db.refresh(disc)
+        return disc
+
+    def delete_discipline(self, discipline_id: str) -> Discipline:
+        disc = self._get_owned(Discipline, discipline_id)
+        self._require_mutable(self._get_version(disc.version_id))
+        self._soft_delete(disc)
+        self._emit(
+            DomainEventType.DISCIPLINE_DELETED,
+            project_id=disc.project_id,
+            version_id=disc.version_id,
+            payload={"discipline_id": disc.id},
+        )
+        self.db.commit()
+        self.db.refresh(disc)
+        return disc
+
+    # --- Element ---
+    def create_element(self, version_id: str, data) -> Element:
+        version = self._get_version(version_id)
+        self._require_mutable(version)
+        d_code, e_type = validate_element_classification(
+            data.discipline_code, data.element_type
+        )
+        level_id = data.level_id
+        space_id = data.space_id
+        discipline_id = data.discipline_id
+        if level_id:
+            level = self._get_owned(Level, level_id)
+            if level.version_id != version.id:
+                raise MdoValidationError("level_id no pertenece a esta versión.")
+        if space_id:
+            space = self._get_owned(Space, space_id)
+            if space.version_id != version.id:
+                raise MdoValidationError("space_id no pertenece a esta versión.")
+            if level_id and space.level_id != level_id:
+                raise MdoValidationError("space_id no pertenece al level_id indicado.")
+        if discipline_id:
+            disc = self._get_owned(Discipline, discipline_id)
+            if disc.version_id != version.id:
+                raise MdoValidationError("discipline_id no pertenece a esta versión.")
+            if disc.code != d_code:
+                raise MdoValidationError(
+                    "discipline_code no coincide con la Discipline referenciada."
+                )
+        el = Element(
+            version_id=version.id,
+            studio_id=version.studio_id,
+            project_id=version.project_id,
+            level_id=level_id,
+            space_id=space_id,
+            discipline_id=discipline_id,
+            discipline_code=d_code,
+            element_type=e_type,
+            code=data.code,
+            display_name=data.display_name,
+            external_id=data.external_id,
+            created_by=self.user_id,
+            updated_by=self.user_id,
+        )
+        self.db.add(el)
+        self.db.flush()
+        self._emit(
+            DomainEventType.ELEMENT_CREATED,
+            project_id=version.project_id,
+            version_id=version.id,
+            payload={
+                "element_id": el.id,
+                "discipline_code": d_code,
+                "element_type": e_type,
+            },
+        )
+        self.db.commit()
+        self.db.refresh(el)
+        return el
+
+    def update_element(self, element_id: str, data) -> Element:
+        el = self._get_owned(Element, element_id)
+        self._require_mutable(self._get_version(el.version_id))
+        payload = data.model_dump(exclude_unset=True)
+        if "discipline_code" in payload or "element_type" in payload:
+            d_code, e_type = validate_element_classification(
+                payload.get("discipline_code", el.discipline_code),
+                payload.get("element_type", el.element_type),
+            )
+            el.discipline_code = d_code
+            el.element_type = e_type
+        for field in (
+            "display_name",
+            "code",
+            "external_id",
+            "level_id",
+            "space_id",
+            "discipline_id",
+        ):
+            if field in payload:
+                setattr(el, field, payload[field])
+        if el.discipline_id:
+            disc = self._get_owned(Discipline, el.discipline_id)
+            if disc.code != el.discipline_code:
+                raise MdoValidationError(
+                    "discipline_code no coincide con la Discipline referenciada."
+                )
+        self._touch(el)
+        self._emit(
+            DomainEventType.ELEMENT_UPDATED,
+            project_id=el.project_id,
+            version_id=el.version_id,
+            payload={"element_id": el.id},
+        )
+        self.db.commit()
+        self.db.refresh(el)
+        return el
+
+    def delete_element(self, element_id: str) -> Element:
+        el = self._get_owned(Element, element_id)
+        self._require_mutable(self._get_version(el.version_id))
+        self._soft_delete(el)
+        self._emit(
+            DomainEventType.ELEMENT_DELETED,
+            project_id=el.project_id,
+            version_id=el.version_id,
+            payload={"element_id": el.id},
+        )
+        self.db.commit()
+        self.db.refresh(el)
+        return el
 
 
 __all__ = [
