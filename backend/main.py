@@ -31,6 +31,8 @@ from billing_mp import (
 from email_service import email_configured, send_invite_email, send_password_reset_email
 from infrastructure.observability import configure_observability, get_observability
 from infrastructure.observability.http import ObservabilityMiddleware, metrics_router
+from infrastructure.runtime import configure_runtime, get_runtime
+from infrastructure.runtime.http import runtime_router
 from motor_ia import get_precios_info, obtener_precios_en_vivo, procesar_plano_ia
 from presupuesto_pdf import build_project_pdf_bytes
 
@@ -82,8 +84,11 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 JsonColumn = JSONB if DATABASE_URL.startswith("postgresql") else JSON
 
+configure_runtime(engine)
+
 app = FastAPI(title="ARQ-IA API")
 app.include_router(metrics_router)
+app.include_router(runtime_router)
 
 allowed_origins = [
     origin.strip()
@@ -581,11 +586,13 @@ async def root():
 
 @app.get("/api/health")
 async def health_api():
-    return {"status": "ok", "version": APP_VERSION}
+    # Liveness only — RuntimeStatusService.liveness never touches DB/deps.
+    return get_runtime().liveness()
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": APP_VERSION}
+    # Liveness only — RuntimeStatusService.liveness never touches DB/deps.
+    return get_runtime().liveness()
 
 
 @app.get("/precios-info")
