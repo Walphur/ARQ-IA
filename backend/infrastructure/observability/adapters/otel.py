@@ -68,7 +68,6 @@ def build_tracer(*, mode: str, service_name: str, endpoint: str, export: bool) -
 class OtelTracer:
     def __init__(self, tracer: Any) -> None:
         self._tracer = tracer
-        self._current_trace_id: Optional[str] = None
 
     def start_span(self, name: str, attributes: Mapping[str, Any]):
         @contextmanager
@@ -80,9 +79,6 @@ class OtelTracer:
                             span.set_attribute(key, value)
                         except Exception:
                             pass
-                    ctx = span.get_span_context()
-                    if ctx and getattr(ctx, "trace_id", 0):
-                        self._current_trace_id = format(ctx.trace_id, "032x")
                     wrapper = _OtelSpan(span)
                     try:
                         yield wrapper
@@ -100,6 +96,7 @@ class OtelTracer:
         return _cm()
 
     def get_trace_id(self) -> Optional[str]:
+        """Read only from the current span context — never shared instance state."""
         try:
             from opentelemetry import trace
 
@@ -108,5 +105,5 @@ class OtelTracer:
             if ctx and getattr(ctx, "trace_id", 0):
                 return format(ctx.trace_id, "032x")
         except Exception:
-            pass
-        return self._current_trace_id
+            return None
+        return None

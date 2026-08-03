@@ -105,7 +105,7 @@ class ObservabilityService:
             )
         self.info(
             "http_request",
-            feature="observability",
+            feature="http",
             module="http",
             route_template=route_template,
             status_code=status_code,

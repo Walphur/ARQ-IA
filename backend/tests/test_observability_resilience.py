@@ -89,3 +89,52 @@ def test_http_request_id_roundtrip_batch(client):
         res = client.get("/health", headers={"X-Request-Id": rid})
         assert res.status_code == 200
         assert res.headers.get("X-Request-Id") == rid
+
+
+def test_handler_sees_request_id_contextvars(monkeypatch):
+    """Pure ASGI middleware must expose request_id inside the route handler."""
+    monkeypatch.setenv("OBS_MODE", "basic")
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    reset_observability_for_tests()
+    configure_observability()
+
+    from fastapi import FastAPI
+
+    from infrastructure.observability.http import ObservabilityMiddleware
+
+    probe = FastAPI()
+    probe.add_middleware(ObservabilityMiddleware)
+
+    @probe.get("/probe-ctx")
+    def probe_ctx():
+        return {"request_id": obs_context.get_field("request_id")}
+
+    res = TestClient(probe).get("/probe-ctx", headers={"X-Request-Id": "handler-ctx-1"})
+    assert res.status_code == 200
+    assert res.headers.get("X-Request-Id") == "handler-ctx-1"
+    assert res.json()["request_id"] == "handler-ctx-1"
+
+
+def test_otel_tracer_has_no_shared_trace_id_state(monkeypatch):
+    monkeypatch.setenv("OBS_MODE", "basic")
+    monkeypatch.setenv("APP_ENV", "dev")
+    reset_observability_for_tests()
+    configure_observability()
+    tracer = get_observability().tracer
+    assert not hasattr(tracer, "_current_trace_id")
+
+
+def test_bind_trace_id_is_reset_after_request(monkeypatch):
+    monkeypatch.setenv("OBS_MODE", "basic")
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    reset_observability_for_tests()
+    configure_observability()
+    import main
+
+    client = TestClient(main.app)
+    client.get("/health", headers={"X-Request-Id": "reset-check-1"})
+    assert obs_context.get_field("request_id") is None
+    assert obs_context.get_field("trace_id") is None

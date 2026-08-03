@@ -2,27 +2,37 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import APIRouter, Header, HTTPException, Response
 
 from infrastructure.observability.setup import get_observability
 from infrastructure.observability.taxonomy import normalize_route_template
 
 
-class ObservabilityMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable):
+class ObservabilityMiddleware:
+    """Pure ASGI middleware so contextvars propagate into route handlers."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         obs = get_observability()
-        incoming = request.headers.get("x-request-id")
-        request_id = obs.ids.sanitize_request_id(incoming)
+        header_map = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        request_id = obs.ids.sanitize_request_id(header_map.get("x-request-id"))
         token = obs.bind(
             request_id=request_id,
             environment=obs.settings.environment,
             version=obs.settings.app_version,
             component="api",
             module="http",
-            feature="observability",
             organization_id=None,
             workspace_id=None,
             user_id=None,
@@ -31,27 +41,39 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             job_id=None,
         )
         started = obs.clock.monotonic()
-        route_template = normalize_route_template(request.url.path)
+        route_template = normalize_route_template(scope.get("path") or "/")
         status_code = 500
+        trace_token: Optional[object] = None
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message.get("status", 500))
+                headers = list(message.get("headers") or [])
+                headers.append((b"x-request-id", request_id.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
         try:
             with obs.start_span(
                 "http.request",
                 {
-                    "http.method": request.method,
+                    "http.method": scope.get("method", "GET"),
                     "http.route": route_template,
                     "request_id": request_id,
                 },
             ):
-                # Bind backend-only trace id into context for logs.
                 trace_id = obs.get_trace_id()
                 if trace_id:
-                    obs.bind(trace_id=trace_id)
-                response = await call_next(request)
-                status_code = response.status_code
-                response.headers["X-Request-Id"] = request_id
-                return response
+                    trace_token = obs.bind(trace_id=trace_id)
+                await self.app(scope, receive, send_wrapper)
         except Exception:
-            obs.error("http_unhandled_error", feature="observability", module="http", route_template=route_template)
+            obs.error(
+                "http_unhandled_error",
+                feature="http",
+                module="http",
+                route_template=route_template,
+            )
             raise
         finally:
             duration = obs.clock.monotonic() - started
@@ -61,6 +83,8 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                     status_code=status_code,
                     duration_seconds=duration,
                 )
+            if trace_token is not None:
+                obs.reset(trace_token)
             obs.reset(token)
 
 
@@ -86,7 +110,6 @@ def metrics_endpoint(
         if not obs.settings.metrics_token or provided != obs.settings.metrics_token:
             raise HTTPException(status_code=401, detail="metrics unauthorized")
     elif obs.settings.metrics_token and provided != obs.settings.metrics_token:
-        # If a token is configured in non-prod, enforce it when present.
         raise HTTPException(status_code=401, detail="metrics unauthorized")
 
     body = obs.render_metrics()

@@ -7,7 +7,7 @@ from typing import Optional
 from infrastructure.observability.adapters.clock import SystemClock
 from infrastructure.observability.adapters.ids import UuidIdGenerator
 from infrastructure.observability.adapters.inmemory_metrics import InMemoryMetrics
-from infrastructure.observability.adapters.null import NullLogger, NullMetrics, NullTracer
+from infrastructure.observability.adapters.null import NullMetrics, NullTracer
 from infrastructure.observability.adapters.otel import build_tracer
 from infrastructure.observability.adapters.stdlib_logging import StdlibLoggerAdapter
 from infrastructure.observability.config import ObservabilitySettings
